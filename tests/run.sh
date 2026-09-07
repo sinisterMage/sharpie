@@ -35,7 +35,21 @@ for case in tests/*.ws; do
 
     # Every `// expect:` line, in the order written, with the marker removed.
     want=$(sed -n 's|^// expect: \{0,1\}||p' "$case")
-    if got=$("$WSHARP" run "$case" 2>&1); then
+
+    # `// env: NAME=value`, one per line, set for this case only. A case about
+    # where sharpie keeps its files has to be able to say where that is, or it
+    # would read whatever the machine running it happens to have installed.
+    env_args=""
+    while IFS= read -r assignment; do
+        [ -n "$assignment" ] || continue
+        env_args="$env_args $assignment"
+    done <<EOF
+$(sed -n 's|^// env: \{0,1\}||p' "$case")
+EOF
+
+    # Unquoted on purpose: `env_args` is a list of assignments, not one word.
+    # Nothing in this repository puts a space in one.
+    if got=$(env $env_args "$WSHARP" run "$case" 2>&1); then
         status=0
     else
         status=$?
