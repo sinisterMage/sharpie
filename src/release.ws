@@ -218,7 +218,21 @@ pub fn digest_of(sidecar: str) !{BadFormat}str {
 pub fn download(f: fault.Fault, v: semver.Version, triple: str, cfg: tls.Config) ?str {
     const url = archive_url(v, triple);
     const sidecar = fetch.get(checksum_url(v, triple), cfg) catch {
-        fault.fail(f, text.concat("cannot reach the checksum for ", url));
+        // **A tag exists before its release does.** Versions are discovered by
+        // asking the remote for its tags, and a tag is pushed *first* -- the
+        // archives appear minutes later when the build that the tag started
+        // finishes, and one that fails never publishes for that platform at
+        // all. So the newest version is routinely the one that cannot be
+        // installed yet, and "cannot reach the checksum" is a confusing way to
+        // say that.
+        //
+        // The two cases are not told apart here, because doing so means asking
+        // the forge's API what a release holds, and its answer is JSON -- which
+        // is the dependency this whole module is written to avoid. Naming both
+        // is honest and costs nothing.
+        fault.fail(f, text.concat(text.concat("no archive published for ", triple),
+            text.concat(text.concat(" at ", semver.render(v)),
+                " -- its release may still be building, or may have failed for this platform")));
         return null;
     };
     const want = digest_of(sidecar) catch {
