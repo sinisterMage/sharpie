@@ -81,6 +81,21 @@ pub fn set_default(s: Settings, name: str) void {
     return;
 }
 
+/// The channel the default was installed from, or null.
+///
+/// Recorded because a channel is a *standing* request and a version is not:
+/// somebody who asked for `stable` wants the newest stable from then on, and
+/// somebody who asked for `0.1.8` asked for `0.1.8`. Without this, `update`
+/// would have to guess which of the two it was looking at.
+pub fn channel(s: Settings) ?str {
+    return string_at(s.root, "channel");
+}
+
+pub fn set_channel(s: Settings, name: str) void {
+    toml.set(s.root, "channel", toml.of_str(name));
+    return;
+}
+
 // ---------------------------------------------------------------------------
 // Directory overrides
 // ---------------------------------------------------------------------------

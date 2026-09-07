@@ -147,6 +147,14 @@ pub fn resolve(vs: []semver.Version, spec: str) ?semver.Version {
     return exact(vs, spec);
 }
 
+/// Whether a spec names a channel rather than a version.
+///
+/// The distinction matters after the install, not during it: a channel is a
+/// standing request that `update` should re-ask, and a version is a one-off.
+pub fn is_channel(spec: str) bool {
+    return text.eq(spec, "stable") or text.eq(spec, "latest");
+}
+
 // ---------------------------------------------------------------------------
 // Where an archive is
 // ---------------------------------------------------------------------------

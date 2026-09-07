@@ -69,6 +69,7 @@ fn verb(f: fault.Fault, args: []str) i64 {
     if (text.eq(name, "init")) { return init_verb(f); }
     if (text.eq(name, "install")) { return install_verb(f, rest); }
     if (text.eq(name, "uninstall")) { return uninstall_verb(f, rest); }
+    if (text.eq(name, "update")) { return update_verb(f); }
     if (text.eq(name, "override")) { return override_verb(f, rest); }
 
     fault.fail(f, text.concat(text.concat("no such verb: `", name), "`"));
@@ -319,6 +320,7 @@ fn install_verb(f: fault.Fault, args: []str) i64 {
     const name = home.spell(semver.render(want), triple);
     if (fs.is_dir(home.toolchain(h, name))) {
         print(text.concat("already\t", name));
+        if (release.is_channel(args[0])) { settings.set_channel(s, args[0]); }
         return adopt(f, h, s, name);
     }
 
@@ -329,6 +331,7 @@ fn install_verb(f: fault.Fault, args: []str) i64 {
     if (!install.unpack(f, h, name, archive)) { return FAILED; }
 
     print(text.concat("installed\t", name));
+    if (release.is_channel(args[0])) { settings.set_channel(s, args[0]); }
     return adopt(f, h, s, name);
 }
 
@@ -337,13 +340,21 @@ fn install_verb(f: fault.Fault, args: []str) i64 {
 /// Only when there is not one: installing a second toolchain should not quietly
 /// move somebody off the one they were using.
 fn adopt(f: fault.Fault, h: str, s: settings.Settings, name: str) i64 {
-    if (settings.default_toolchain(s)) |already| { return OK; }
-    settings.set_default(s, name);
+    // Saved either way, and that matters: the caller may have just recorded a
+    // channel, and returning early because a default already exists would
+    // throw that away -- so `update` would then say nothing was installed from
+    // a channel, having just installed one.
+    var chose = false;
+    if (settings.default_toolchain(s)) |already| {
+    } else {
+        settings.set_default(s, name);
+        chose = true;
+    }
     settings.save(h, s) catch {
         fault.fail(f, text.concat("installed, but cannot write ", home.settings(h)));
         return FAILED;
     };
-    print(text.concat("default\t", name));
+    if (chose) { print(text.concat("default\t", name)); }
     return OK;
 }
 
@@ -357,6 +368,52 @@ fn keep(f: fault.Fault, h: str, name: str, archive: str) bool {
     fs.mkdir_all(room) catch { return true; };
     io.write_file(path.join(room, name), archive) catch { return true; };
     return true;
+}
+
+/// Re-ask the channel the default came from, and install what it says now.
+///
+/// Only a channel is re-asked. Somebody who installed `0.1.8` asked for
+/// `0.1.8`, and moving them off it because something newer exists would be
+/// answering a question they did not put -- which is why `install` records
+/// whether the request was standing.
+fn update_verb(f: fault.Fault) i64 {
+    const h = opened(f) orelse return FAILED;
+    const s = read_settings(f, h) orelse return FAILED;
+
+    const chan = settings.channel(s) orelse {
+        fault.fail(f, "nothing was installed from a channel; `sharpie install stable` starts one");
+        return NOTHING;
+    };
+    const cfg = fetch.anchors() catch {
+        fault.fail(f, "cannot read this machine's certificate store");
+        return FAILED;
+    };
+    const versions = release.available(f, cfg);
+    if (!f.ok) { return FAILED; }
+    const want = release.resolve(versions, chan) orelse {
+        fault.fail(f, text.concat(text.concat("`", chan), "` names no release"));
+        return FAILED;
+    };
+
+    const triple = os.target();
+    const name = home.spell(semver.render(want), triple);
+    if (fs.is_dir(home.toolchain(h, name))) {
+        print(text.concat(text.concat("current\t", chan), text.concat("\t", name)));
+        return OK;
+    }
+
+    const archive = release.download(f, want, triple, cfg) orelse return FAILED;
+    if (!keep(f, h, release.archive_name(want, triple), archive)) { return FAILED; }
+    if (!install.unpack(f, h, name, archive)) { return FAILED; }
+    print(text.concat("installed\t", name));
+
+    // The channel moved, so what it points at moves with it. This is the one
+    // place a default is changed without being asked for by name, and it is
+    // what "install stable" meant in the first place.
+    settings.set_default(s, name);
+    if (!saved(f, h, s)) { return FAILED; }
+    print(text.concat("default\t", name));
+    return OK;
 }
 
 fn uninstall_verb(f: fault.Fault, args: []str) i64 {
@@ -472,6 +529,7 @@ fn usage() void {
     print("  init                          make ~/.sharpie and its proxies");
     print("  install <version|channel>     fetch a toolchain and keep it");
     print("  uninstall <toolchain>         take one away");
+    print("  update                        re-ask the channel and follow it");
     print("  show                          what would run here, and why");
     print("  which <command>               where that command actually is");
     print("  default <toolchain>           use this one when nothing else says");
