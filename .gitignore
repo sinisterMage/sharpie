@@ -1,0 +1,4 @@
+# The compiled binary, and whatever a case left behind.
+/sharpie
+/sharpie.exe
+*.o
