@@ -66,6 +66,7 @@ fn verb(f: fault.Fault, args: []str) i64 {
     if (text.eq(name, "which")) { return which(f, rest); }
     if (text.eq(name, "default")) { return set_default(f, rest); }
     if (text.eq(name, "toolchain")) { return toolchain_verb(f, rest); }
+    if (text.eq(name, "init")) { return init_verb(f); }
     if (text.eq(name, "install")) { return install_verb(f, rest); }
     if (text.eq(name, "uninstall")) { return uninstall_verb(f, rest); }
     if (text.eq(name, "override")) { return override_verb(f, rest); }
@@ -213,6 +214,71 @@ fn toolchain_link(f: fault.Fault, args: []str) i64 {
     };
     print(text.concat(text.concat("linked\t", args[0]), text.concat("\t", dir)));
     return OK;
+}
+
+/// Make the directories, and the proxies.
+///
+/// A proxy is a **copy of this binary** under another name, not a script and
+/// not a symlink. A copy because `src/proxy.ws` reads which program to be from
+/// `self_exe`, and on Linux that follows a symlink to its target -- so a
+/// symlinked `wsharp` would see itself as `sharpie` and print a usage message.
+/// The cost is three copies of one binary, which is the same trade rustup
+/// makes.
+///
+/// Idempotent: run it again after `sharpie self update` and the proxies are
+/// replaced by the new binary. That is the intended way to refresh them.
+fn init_verb(f: fault.Fault) i64 {
+    const h = opened(f) orelse return FAILED;
+    const me = os.self_exe() catch {
+        fault.fail(f, "cannot find this program on disk, so cannot copy it");
+        return FAILED;
+    };
+    const image = io.read_file(me) catch {
+        fault.fail(f, text.concat("cannot read ", me));
+        return FAILED;
+    };
+
+    // Every directory sharpie owns, so that nothing later has to check.
+    if (!made(f, home.bin(h)) or !made(f, home.toolchains(h))) { return FAILED; }
+    if (!made(f, home.downloads(h)) or !made(f, home.scratch(h))) { return FAILED; }
+
+    if (!proxy_at(f, h, "sharpie", image)) { return FAILED; }
+    if (!proxy_at(f, h, "wsharp", image)) { return FAILED; }
+    if (!proxy_at(f, h, "ingot", image)) { return FAILED; }
+
+    print(text.concat("home\t", h));
+    print(text.concat("bin\t", home.bin(h)));
+    return OK;
+}
+
+fn made(f: fault.Fault, dir: str) bool {
+    fs.mkdir_all(dir) catch {
+        fault.fail(f, text.concat("cannot create ", dir));
+        return false;
+    };
+    return true;
+}
+
+/// One proxy: this binary's bytes under `name`, and runnable.
+///
+/// `.exe` where the platform wants one, asked by what `self_exe` was called
+/// rather than by knowing the platform -- the same way `ingot` finds its
+/// compiler, and the only way available in a language whose one question about
+/// the platform is `os.target()`.
+fn proxy_at(f: fault.Fault, h: str, name: str, image: str) bool {
+    var spelled = name;
+    if (text.find(os.target(), "windows") >= 0) { spelled = text.concat(name, ".exe"); }
+    const at = path.join(home.bin(h), spelled);
+    io.write_file(at, image) catch {
+        fault.fail(f, text.concat("cannot write ", at));
+        return false;
+    };
+    fs.chmod(at, 0o755) catch {
+        fault.fail(f, text.concat("cannot make ", text.concat(at, " runnable")));
+        return false;
+    };
+    print(text.concat("proxy\t", at));
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +469,7 @@ fn read_settings(f: fault.Fault, h: str) ?settings.Settings {
 fn usage() void {
     print("sharpie -- the W# version manager");
     print("");
+    print("  init                          make ~/.sharpie and its proxies");
     print("  install <version|channel>     fetch a toolchain and keep it");
     print("  uninstall <toolchain>         take one away");
     print("  show                          what would run here, and why");
