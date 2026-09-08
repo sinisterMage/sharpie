@@ -26,6 +26,8 @@
 // expect: installed lists both: 0.1.0-here 0.2.0-here
 // expect: a program that is there: wsharp
 // expect: a program that is not: true
+// expect: why nothing, on an empty home: nothing is chosen; `sharpie install stable` gets a toolchain and makes it the default
+// expect: why nothing, when a pin names what is not installed: `0.9.9` is not installed (wsharp-toolchain.toml); `sharpie toolchain list` says what is
 const array = @import("std/array");
 const bytes = @import("std/bytes");
 const crypto = @import("std/crypto");
@@ -124,6 +126,25 @@ fn run() !void {
     print(text.concat("a program that is there: ", path.basename(prog)));
     print(text.concat("a program that is not: ", yes(no_program(dir, "cargo"))));
 
+    // *Why* nothing was chosen, which is a different question from which
+    // toolchain applies and has to be asked separately: by the time `choose`
+    // has answered null it has thrown away the name it could not find.
+    const empty = path.join(os.temp_dir(), text.concat("sharpie-tcnone-", tag));
+    try fs.mkdir_all(empty);
+    const none = try settings.read(empty);
+    print(text.concat("why nothing, on an empty home: ",
+        toolchain.why_nothing(none, []str{}, empty)));
+
+    // A pin naming an uninstalled version, in a home whose *default* is
+    // installed and fine. The message has to name `0.9.9` and the file that
+    // asked for it. Naming the default instead is the bug this guards: it
+    // reported a working toolchain as broken and sent the reader to the one
+    // place the problem was not.
+    try io.write_file(path.join(work, toolchain.PIN_FILE), "toolchain = \"0.9.9\"\n");
+    print(text.concat("why nothing, when a pin names what is not installed: ",
+        toolchain.why_nothing(s, []str{}, work)));
+
+    try fs.remove_tree(empty);
     try fs.remove_tree(h);
     return;
 }

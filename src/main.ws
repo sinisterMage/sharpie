@@ -24,6 +24,15 @@ const settings = @import("./settings.ws");
 const text = @import("std/str");
 const toolchain = @import("./toolchain.ws");
 
+/// This sharpie's version.
+///
+/// Written down here rather than injected at build time, so that a source
+/// checkout answers the same as a released binary and neither has to be
+/// believed over the other. The release workflow checks it against the tag and
+/// refuses to publish a disagreement -- which turns forgetting to bump it into
+/// a failed release rather than a binary that lies about what it is.
+pub const VERSION = "0.1.0";
+
 pub const OK = 0;
 /// Nothing is wrong; the answer is just no. `sharpie which` when there is no
 /// toolchain, and `sharpie show` when nothing has been chosen.
@@ -62,6 +71,13 @@ fn verb(f: fault.Fault, args: []str) i64 {
         usage();
         return OK;
     }
+    // Every spelling somebody might try, because the one thing worse than a
+    // program that will not say its version is one that has an opinion about
+    // how it should be asked.
+    if (text.eq(name, "--version") or text.eq(name, "-V") or text.eq(name, "version")) {
+        print(text.concat("sharpie ", VERSION));
+        return OK;
+    }
     if (text.eq(name, "show")) { return show(f); }
     if (text.eq(name, "which")) { return which(f, rest); }
     if (text.eq(name, "default")) { return set_default(f, rest); }
@@ -94,7 +110,7 @@ fn show(f: fault.Fault) i64 {
     print(text.concat("target\t", os.target()));
 
     const chosen = toolchain.choose(h, s, []str{}, cwd) orelse {
-        print("toolchain\t-\tnothing is chosen");
+        print(text.concat("toolchain\t-\t", toolchain.why_nothing(s, []str{}, cwd)));
         return NOTHING;
     };
     print(text.concat(text.concat("toolchain\t", chosen.name),
@@ -113,7 +129,7 @@ fn which(f: fault.Fault, args: []str) i64 {
     const s = read_settings(f, h) orelse return FAILED;
     const cwd = os.cwd() catch ".";
     const chosen = toolchain.choose(h, s, []str{}, cwd) orelse {
-        fault.fail(f, "no toolchain is chosen; `sharpie default <version>` picks one");
+        fault.fail(f, toolchain.why_nothing(s, []str{}, cwd));
         return FAILED;
     };
     const at = toolchain.program(chosen.dir, args[0]) orelse {
@@ -226,8 +242,11 @@ fn toolchain_link(f: fault.Fault, args: []str) i64 {
 /// The cost is three copies of one binary, which is the same trade rustup
 /// makes.
 ///
-/// Idempotent: run it again after `sharpie self update` and the proxies are
-/// replaced by the new binary. That is the intended way to refresh them.
+/// Idempotent, and that is what makes it the way to upgrade sharpie itself:
+/// re-running `install.sh` puts a new binary in `bin/`, and running `init` from
+/// it rewrites the proxies as copies of the new one. There is no `self update`
+/// verb -- a program replacing its own running image is a trick worth avoiding
+/// when the installer is already there and already does it.
 fn init_verb(f: fault.Fault) i64 {
     const h = opened(f) orelse return FAILED;
     const me = os.self_exe() catch {
@@ -429,6 +448,18 @@ fn uninstall_verb(f: fault.Fault, args: []str) i64 {
     };
     if (!install.remove(f, h, found.name)) { return FAILED; }
     print(text.concat("removed\t", found.name));
+
+    // Removing what the default names leaves an installation where nothing
+    // runs. Said here rather than left for the next command to discover,
+    // because here it is still obvious which act caused it -- and the settings
+    // are deliberately not rewritten, since picking a replacement is a choice
+    // and guessing one is how somebody ends up on a compiler they did not ask
+    // for.
+    if (settings.default_toolchain(s)) |named| {
+        if (text.eq(named, found.name)) {
+            print("warning\tthat was the default; `sharpie default <toolchain>` picks another");
+        }
+    }
     return OK;
 }
 
@@ -537,6 +568,7 @@ fn usage() void {
     print("  toolchain link <name> <dir>   name a directory that holds a toolchain");
     print("  override set <toolchain>      pin this directory to one");
     print("  override unset | list         drop one, or show them all");
+    print("  version                       which sharpie this is");
     print("  help                          this");
     print("");
     print("A toolchain is chosen by the first of these that answers:");

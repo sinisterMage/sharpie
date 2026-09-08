@@ -70,7 +70,10 @@ pub fn run(f: fault.Fault, name: str, args: []str) i64 {
     const cwd = os.cwd() catch ".";
 
     const chosen = toolchain.choose(h, s, args, cwd) orelse {
-        fault.fail(f, no_toolchain(s));
+        // `args` and `cwd` go in as well as `s`, because the rung that failed
+        // may be the command line or a file in this directory rather than
+        // anything written down in the settings.
+        fault.fail(f, toolchain.why_nothing(s, args, cwd));
         return 1;
     };
     const program = toolchain.program(chosen.dir, name) orelse {
@@ -89,15 +92,3 @@ pub fn run(f: fault.Fault, name: str, args: []str) i64 {
     return 1;
 }
 
-/// What to say when nothing has been chosen.
-///
-/// Two different situations wearing one symptom, and telling them apart is the
-/// difference between a useful message and a shrug: a sharpie with toolchains
-/// installed and no default has a different fix from one with nothing at all.
-fn no_toolchain(s: settings.Settings) str {
-    const named = settings.default_toolchain(s) orelse {
-        return "no toolchain is set; `sharpie install stable` gets one and makes it the default";
-    };
-    return text.concat(text.concat("the default toolchain `", named),
-        "` is not installed; `sharpie toolchain list` says what is");
-}

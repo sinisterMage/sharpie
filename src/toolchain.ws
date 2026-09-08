@@ -32,23 +32,67 @@ pub const PIN_FILE = "wsharp-toolchain.toml";
 /// somebody asks when the answer surprises them.
 pub const Choice = struct { name: str, dir: str, why: str };
 
-/// Which toolchain applies, given a command line and a working directory.
+/// A toolchain the ladder named, and the rung that named it.
+///
+/// Separate from [`Choice`] because it is the answer to a different question.
+/// A `Choice` is something that can be run; an `Ask` is only what was asked
+/// for, and may name nothing installed at all.
+pub const Ask = struct { name: str, why: str };
+
+/// Which toolchain the ladder names, installed or not.
+///
+/// **The rungs live here rather than in [`choose`], and that split is what
+/// makes a failure explicable.** `choose` answering null says "nothing
+/// runnable", which is one symptom covering two situations with opposite
+/// fixes: a home with no default at all, and a pin file naming a version that
+/// was never installed. Only the name that was *asked for* tells them apart,
+/// and by the time `choose` has failed it has been discarded.
 ///
 /// `args` is the whole command line, so that a leading `+name` can be seen. The
 /// caller strips it -- this only reports that it is there, because a proxy has
 /// to remove it before handing the rest on and only it knows the shape of what
 /// it is handing.
-pub fn choose(h: str, s: settings.Settings, args: []str, cwd: str) ?Choice {
-    if (plus_toolchain(args)) |named| { return located(h, s, named, "the `+` argument"); }
+pub fn asked(s: settings.Settings, args: []str, cwd: str) ?Ask {
+    if (plus_toolchain(args)) |named| {
+        return Ask{ .name = named, .why = "the `+` argument" };
+    }
     if (os.get("SHARPIE_TOOLCHAIN")) |named| {
-        if (text.len(named) > 0) { return located(h, s, named, "SHARPIE_TOOLCHAIN"); }
+        if (text.len(named) > 0) { return Ask{ .name = named, .why = "SHARPIE_TOOLCHAIN" }; }
     }
-    if (pinned_above(cwd)) |named| { return located(h, s, named, PIN_FILE); }
+    if (pinned_above(cwd)) |named| { return Ask{ .name = named, .why = PIN_FILE }; }
     if (settings.override_for(s, cwd)) |named| {
-        return located(h, s, named, "a directory override");
+        return Ask{ .name = named, .why = "a directory override" };
     }
-    if (settings.default_toolchain(s)) |named| { return located(h, s, named, "the default"); }
+    if (settings.default_toolchain(s)) |named| {
+        return Ask{ .name = named, .why = "the default" };
+    }
     return null;
+}
+
+/// Which toolchain applies, given a command line and a working directory.
+///
+/// The ladder, and then the question of whether what it named is on disk.
+/// Null when either half has no answer; [`why_nothing`] says which.
+pub fn choose(h: str, s: settings.Settings, args: []str, cwd: str) ?Choice {
+    const a = asked(s, args, cwd) orelse return null;
+    return located(h, s, a.name, a.why);
+}
+
+/// Why [`choose`] answered null, in a sentence.
+///
+/// One place for the wording because three callers say it -- the proxy, `show`
+/// and `which` -- and somebody comparing two of them should not have to work
+/// out whether they mean the same thing.
+///
+/// The rung is named because it is the question that follows. `0.9.9 is not
+/// installed` invites "I never asked for that"; `(wsharp-toolchain.toml)` is
+/// the answer, and it points at the file to edit.
+pub fn why_nothing(s: settings.Settings, args: []str, cwd: str) str {
+    const a = asked(s, args, cwd) orelse {
+        return "nothing is chosen; `sharpie install stable` gets a toolchain and makes it the default";
+    };
+    return text.concat(text.concat(text.concat("`", a.name), "` is not installed ("),
+        text.concat(a.why, "); `sharpie toolchain list` says what is"));
 }
 
 /// `+name` as the first argument, or null.
