@@ -92,7 +92,20 @@ jobs:
           set -eu
           ./sharpie version
           ./sharpie help > /dev/null
-          # `init` into a throwaway home, which is the one verb that writes
-          # before anything has been installed.
-          SHARPIE_HOME="${PWD}/.sharpie-ci" ./sharpie init
-          test -x ".sharpie-ci/bin/wsharp"
+
+          # **`init` is run from where `install.sh` puts the binary, not from
+          # the build directory, and that difference is the whole test.** `init`
+          # writes three proxies, and one of them is the file it is running
+          # from -- a running executable cannot be opened for writing, so doing
+          # it in place fails with `ETXTBSY` and leaves an installation with no
+          # `wsharp` in it. Running `./sharpie init` from here instead would
+          # pass while every real install broke, which is exactly what happened.
+          home="${PWD}/.sharpie-ci"
+          mkdir -p "${home}/bin"
+          cp sharpie "${home}/bin/sharpie"
+          SHARPIE_HOME="$home" "${home}/bin/sharpie" init
+          test -x "${home}/bin/wsharp"
+          test -x "${home}/bin/ingot"
+          # Again, because `init` is meant to be idempotent -- that is how a
+          # sharpie upgrade refreshes its own proxies.
+          SHARPIE_HOME="$home" "${home}/bin/sharpie" init > /dev/null

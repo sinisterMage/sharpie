@@ -129,11 +129,24 @@ jobs:
           echo "$got"
           [ "$got" = "sharpie ${TAG#v}" ] || { echo "built binary reports \`$got\`" >&2; exit 1; }
           ./sharpie help > /dev/null
-          SHARPIE_HOME="${PWD}/.sharpie-smoke" ./sharpie init
-          test -x ".sharpie-smoke/bin/wsharp"
+
+          # **From where `install.sh` puts it**, because `init` writes three
+          # proxies and one of them is the file it is running from. A running
+          # executable cannot be opened for writing -- `ETXTBSY` -- so doing it
+          # in place fails on the first of the three and leaves an installation
+          # with no `wsharp` and no `ingot`. Running `./sharpie init` from the
+          # build directory would pass while every real install broke.
+          home="${PWD}/.sharpie-smoke"
+          mkdir -p "${home}/bin"
+          cp sharpie "${home}/bin/sharpie"
+          SHARPIE_HOME="$home" "${home}/bin/sharpie" init
+          test -x "${home}/bin/wsharp"
+          test -x "${home}/bin/ingot"
+          # Idempotent, which is how upgrading refreshes the proxies.
+          SHARPIE_HOME="$home" "${home}/bin/sharpie" init > /dev/null
           # The proxies are copies of this binary, so one of them can be asked
           # the manager's own questions and must answer them.
-          SHARPIE_HOME="${PWD}/.sharpie-smoke" ./.sharpie-smoke/bin/sharpie show || true
+          SHARPIE_HOME="$home" "${home}/bin/sharpie" show || true
 
       # **One binary, and no `lib/`.** That is the difference between packaging
       # sharpie and packaging the toolchain it installs: `wsharp` links and so

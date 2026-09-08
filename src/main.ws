@@ -9,6 +9,8 @@
 // `sharpie toolchain list` composes with `cut` instead of needing a `--json`
 // that would have to be kept in step with it.
 const array = @import("std/array");
+const bytes = @import("std/bytes");
+const crypto = @import("std/crypto");
 const fault = @import("ingot/fault");
 const fetch = @import("./fetch.ws");
 const fs = @import("std/fs");
@@ -31,7 +33,7 @@ const toolchain = @import("./toolchain.ws");
 /// believed over the other. The release workflow checks it against the tag and
 /// refuses to publish a disagreement -- which turns forgetting to bump it into
 /// a failed release rather than a binary that lies about what it is.
-pub const VERSION = "0.1.0";
+pub const VERSION = "0.1.1";
 
 pub const OK = 0;
 /// Nothing is wrong; the answer is just no. `sharpie which` when there is no
@@ -285,20 +287,59 @@ fn made(f: fault.Fault, dir: str) bool {
 /// rather than by knowing the platform -- the same way `ingot` finds its
 /// compiler, and the only way available in a language whose one question about
 /// the platform is `os.target()`.
+///
+/// **Staged beside the target and `rename`d over it, never opened for writing
+/// in place.** A running executable cannot be written to -- Linux answers
+/// `ETXTBSY`, "text file busy" -- and `bin/sharpie` writing `bin/sharpie` is
+/// not a hypothetical: it is exactly what happens on a first install, because
+/// `install.sh` copies this binary into `bin/` and then runs *that copy* to
+/// make the proxies. Writing in place failed on the first of the three and
+/// left an installation with no `wsharp` and no `ingot` in it.
+///
+/// `rename` has no such objection: it replaces the directory entry and leaves
+/// the running image alone, which is also what makes upgrading work. Being
+/// atomic is the bonus -- an interrupted `init` leaves the old proxy rather
+/// than half of a new one.
 fn proxy_at(f: fault.Fault, h: str, name: str, image: str) bool {
     var spelled = name;
     if (text.find(os.target(), "windows") >= 0) { spelled = text.concat(name, ".exe"); }
     const at = path.join(home.bin(h), spelled);
-    io.write_file(at, image) catch {
-        fault.fail(f, text.concat("cannot write ", at));
+
+    // In the same directory, so the `rename` cannot cross a filesystem; random,
+    // so two `init` runs cannot stage into one file.
+    const tag = crypto.random(8) catch {
+        fault.fail(f, "cannot name a temporary file");
         return false;
     };
-    fs.chmod(at, 0o755) catch {
-        fault.fail(f, text.concat("cannot make ", text.concat(at, " runnable")));
+    const staged = text.concat(at, text.concat(".", bytes.to_hex(tag)));
+
+    io.write_file(staged, image) catch {
+        fault.fail(f, text.concat("cannot write ", staged));
+        return false;
+    };
+    // Runnable before it is published, so the name never exists as a file that
+    // cannot be run.
+    fs.chmod(staged, 0o755) catch {
+        fault.fail(f, text.concat("cannot make ", text.concat(staged, " runnable")));
+        drop(staged);
+        return false;
+    };
+    fs.rename(staged, at) catch {
+        fault.fail(f, text.concat("cannot put a proxy at ", at));
+        drop(staged);
         return false;
     };
     print(text.concat("proxy\t", at));
     return true;
+}
+
+/// Throw away a staged proxy, saying nothing if that fails too.
+///
+/// The failure being cleaned up after is the one worth reporting; a second
+/// message about the leftovers would replace it with a less useful one.
+fn drop(at: str) void {
+    fs.remove(at) catch { return; };
+    return;
 }
 
 // ---------------------------------------------------------------------------
