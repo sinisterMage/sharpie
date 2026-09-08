@@ -1,0 +1,98 @@
+# Every push and every pull request: build sharpie, and run its cases.
+#
+# **The compiler is downloaded, not built.** sharpie is written in W#, so CI
+# needs a W# toolchain -- and the honest way to get one is the same way a user
+# does: take the published release. Building the compiler from source here
+# would test a `wsharp` nobody has, and would put a Rust build in front of
+# every push to a repository with no Rust in it.
+#
+# That makes this a standing check on something worth checking: sharpie has to
+# keep compiling with a *released* compiler, not only with whatever is in a
+# WSharp working tree. `.github/workflows/release.yml` bootstraps the same way,
+# so a green CI run means the release will get that far too.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # Pinned rather than `latest`, so that a WSharp release cannot change what
+  # this repository builds with without a commit here saying so. Bumping it is
+  # a deliberate act and shows up in the history as one.
+  WSHARP_VERSION: "0.1.1"
+
+jobs:
+  check:
+    name: ${{ matrix.triple }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            triple: x86_64-unknown-linux-gnu
+            sha: sha256sum
+          - os: macos-latest
+            triple: aarch64-apple-darwin
+            # macOS has no `sha256sum`. `shasum -a 256` writes the same
+            # `<hex>  <name>` line, which is all anything reading it needs.
+            sha: shasum -a 256
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      # The toolchain, fetched and checked. Unpacked into `.wsharp/` rather
+      # than a temporary directory so that the path below is stable and a
+      # failed step can be read without guessing where anything went.
+      - name: Bootstrap the W# toolchain
+        run: |
+          set -eu
+          stage="wsharp-${WSHARP_VERSION}-${{ matrix.triple }}"
+          base="https://github.com/sinisterMage/WSharp/releases/download/v${WSHARP_VERSION}"
+          mkdir -p .wsharp
+          curl -fsSL --proto '=https' --tlsv1.2 -o ".wsharp/${stage}.tar.gz" "${base}/${stage}.tar.gz"
+          curl -fsSL --proto '=https' --tlsv1.2 -o ".wsharp/${stage}.tar.gz.sha256" "${base}/${stage}.tar.gz.sha256"
+          cd .wsharp
+          # The published digest is the first field; the name beside it is
+          # whatever the machine that wrote it called the file.
+          want=$(cut -d' ' -f1 < "${stage}.tar.gz.sha256")
+          got=$(${{ matrix.sha }} "${stage}.tar.gz" | cut -d' ' -f1)
+          [ "$want" = "$got" ] || { echo "the toolchain is not what was published" >&2; exit 1; }
+          tar -xzf "${stage}.tar.gz"
+          echo "WSHARP=${PWD}/${stage}/wsharp" >> "$GITHUB_ENV"
+
+      - name: Versions
+        run: |
+          "$WSHARP" --version
+          cc --version | head -1
+
+      # `WSHARP` is what `tests/run.sh` reads, and the whole reason it takes an
+      # environment variable rather than looking in one place.
+      - name: Test
+        run: ./tests/run.sh
+
+      - name: Build
+        run: |
+          "$WSHARP" build src/main.ws -o sharpie
+
+      # A binary that builds and then cannot answer `help` has not been built,
+      # it has been linked. This is the cheapest thing that tells them apart,
+      # and it runs the proxy path in `src/proxy.ws` on the way past -- the
+      # binary has to work out that it was invoked as `sharpie` and not as a
+      # compiler before it can print anything at all.
+      - name: Smoke
+        run: |
+          set -eu
+          ./sharpie version
+          ./sharpie help > /dev/null
+          # `init` into a throwaway home, which is the one verb that writes
+          # before anything has been installed.
+          SHARPIE_HOME="${PWD}/.sharpie-ci" ./sharpie init
+          test -x ".sharpie-ci/bin/wsharp"

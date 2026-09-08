@@ -1,0 +1,178 @@
+# Publishing a tagged release.
+#
+# Cutting one is `git tag v0.1.0 && git push origin v0.1.0`. Everything else is
+# here.
+#
+# **The matrix is three targets, and it is not an arbitrary three.** sharpie is
+# built by `wsharp`, so it can only be built where a `wsharp` has been
+# published -- the matrix below is exactly WSharp's, and cannot get ahead of it.
+# There is no Windows arm and no aarch64 Linux arm for that reason and no other:
+# when WSharp publishes them, they belong here, and `install.sh` already knows
+# how to name them.
+#
+# The toolchain is downloaded rather than built, for `ci.yml`'s reason: a
+# release of a version manager should be built by the compiler its own users
+# have, and building the compiler from source here would test one nobody has.
+
+name: Release
+
+on:
+  push:
+    tags:
+      # `v0.1.0`, and `v0.1.0-rc1` for a pre-release. Anything without the `v`
+      # is left alone, so a tag can still be used for something else.
+      - "v*"
+  # So a release can be retried without deleting and re-pushing a tag. A tag
+  # that has to be moved to fix a workflow is a tag that means two things.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The existing tag to build and publish, e.g. v0.1.0"
+        required: true
+
+# What `softprops/action-gh-release` needs to create the release and attach to
+# it. The token is minted for the run; there is no secret to configure.
+permissions:
+  contents: write
+
+env:
+  WSHARP_VERSION: "0.1.1"
+  # The tag being released, however this run was started. On a tag push
+  # `github.ref_name` *is* the tag; on a manual run it is the branch, which is
+  # never what should be packaged, so the input wins.
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  release:
+    name: ${{ matrix.triple }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      # One target's failure must not cancel the others: a macOS runner having
+      # a bad day should not cost the Linux tarball.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            triple: x86_64-unknown-linux-gnu
+            sha: sha256sum
+          - os: macos-latest
+            triple: aarch64-apple-darwin
+            sha: shasum -a 256
+          # `macos-13` was the Intel image and was retired in December 2025;
+          # a job asking for it is never claimed and queues until it times out.
+          # `macos-15-intel` is the replacement label.
+          - os: macos-15-intel
+            triple: x86_64-apple-darwin
+            sha: shasum -a 256
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # The tag, not the branch: a manual re-run must package the same commit
+      # the tag names, or it would publish something the tag never pointed at.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      # **A binary that lies about its version is worse than one that will not
+      # say.** `sharpie version` answers from a constant in `src/main.ws`, and
+      # nothing forces that constant to have been bumped along with the tag. So
+      # it is checked here, before anything is built: a disagreement fails the
+      # release rather than shipping a `v0.2.0` that calls itself `0.1.0`.
+      - name: The version agrees with the tag
+        run: |
+          set -eu
+          version="${TAG#v}"
+          declared=$(sed -n 's/^pub const VERSION = "\(.*\)";$/\1/p' src/main.ws)
+          echo "tag ${version}, source ${declared}"
+          if [ "$declared" != "$version" ]; then
+              echo "src/main.ws says \`${declared}\` and the tag says \`${version}\`" >&2
+              echo "bump VERSION in src/main.ws, or tag the commit that has" >&2
+              exit 1
+          fi
+
+      - name: Bootstrap the W# toolchain
+        run: |
+          set -eu
+          stage="wsharp-${WSHARP_VERSION}-${{ matrix.triple }}"
+          base="https://github.com/sinisterMage/WSharp/releases/download/v${WSHARP_VERSION}"
+          mkdir -p .wsharp
+          curl -fsSL --proto '=https' --tlsv1.2 -o ".wsharp/${stage}.tar.gz" "${base}/${stage}.tar.gz"
+          curl -fsSL --proto '=https' --tlsv1.2 -o ".wsharp/${stage}.tar.gz.sha256" "${base}/${stage}.tar.gz.sha256"
+          cd .wsharp
+          want=$(cut -d' ' -f1 < "${stage}.tar.gz.sha256")
+          got=$(${{ matrix.sha }} "${stage}.tar.gz" | cut -d' ' -f1)
+          [ "$want" = "$got" ] || { echo "the toolchain is not what was published" >&2; exit 1; }
+          tar -xzf "${stage}.tar.gz"
+          echo "WSHARP=${PWD}/${stage}/wsharp" >> "$GITHUB_ENV"
+
+      # A tag that cannot pass its own cases is not a release. This repeats what
+      # CI already did for the commit, which is the point: a tag can be pushed
+      # at any commit, including one CI never saw.
+      - name: Test
+        run: ./tests/run.sh
+
+      - name: Build
+        run: |
+          "$WSHARP" build src/main.ws -o sharpie
+
+      # What is about to be published, made to do the things it exists to do,
+      # on the machine that built it. `init` is the verb `install.sh` runs the
+      # moment it has unpacked this binary -- if it does not work here it will
+      # not work there, and finding that out from a user's terminal is finding
+      # it out too late.
+      - name: Smoke
+        run: |
+          set -eu
+          got=$(./sharpie version)
+          echo "$got"
+          [ "$got" = "sharpie ${TAG#v}" ] || { echo "built binary reports \`$got\`" >&2; exit 1; }
+          ./sharpie help > /dev/null
+          SHARPIE_HOME="${PWD}/.sharpie-smoke" ./sharpie init
+          test -x ".sharpie-smoke/bin/wsharp"
+          # The proxies are copies of this binary, so one of them can be asked
+          # the manager's own questions and must answer them.
+          SHARPIE_HOME="${PWD}/.sharpie-smoke" ./.sharpie-smoke/bin/sharpie show || true
+
+      # **One binary, and no `lib/`.** That is the difference between packaging
+      # sharpie and packaging the toolchain it installs: `wsharp` links and so
+      # needs its runtime archive beside it, but sharpie is what `wsharp build`
+      # *produced* -- the archive is already linked in. So a release is one
+      # executable, and `install.sh` copies exactly that one file.
+      #
+      # The checksum is a per-target sidecar rather than a shared `SHA256SUMS`,
+      # because three matrix jobs writing one file would each overwrite the
+      # others. `install.sh` wants one tarball and one digest anyway.
+      - name: Package
+        run: |
+          set -eu
+          version="${TAG#v}"
+          stage="sharpie-${version}-${{ matrix.triple }}"
+          mkdir -p "dist/${stage}"
+          cp sharpie "dist/${stage}/"
+          cp README.md LICENSE "dist/${stage}/"
+          tar -czf "dist/${stage}.tar.gz" -C dist "${stage}"
+          rm -r "dist/${stage}"
+          cd dist
+          ${{ matrix.sha }} "${stage}.tar.gz" > "${stage}.tar.gz.sha256"
+          ls -l
+          cat "${stage}.tar.gz.sha256"
+
+      # Creates the release at this tag if it is not there yet and attaches
+      # this target's two files. Every matrix job does the same, so the three
+      # converge on one release holding six assets.
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          # Named explicitly, because on a manual run the default is the ref --
+          # which is the branch, and would attach these to a release called
+          # `main`.
+          tag_name: ${{ env.TAG }}
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          # `v0.1.0-rc1` is a pre-release and `v0.1.0` is not: the hyphen is
+          # what semver already uses to say so.
+          prerelease: ${{ contains(env.TAG, '-') }}
+          fail_on_unmatched_files: true

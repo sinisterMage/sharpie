@@ -28,6 +28,12 @@ die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 # them -- `sharpie` itself answers with `os.target()`, and the two have to
 # agree or an installed sharpie would look for a different archive than the one
 # that installed it.
+#
+# Not every triple named here is published. sharpie is built by `wsharp`, so it
+# can only be built where WSharp itself has been -- today that is x86_64 Linux
+# and both Darwins. The rest are recognised anyway rather than rejected here:
+# the release either has the file or it does not, and letting the download say
+# so keeps one list instead of two that can disagree.
 detect_triple() {
     kernel=$(uname -s)
     machine=$(uname -m)
@@ -95,7 +101,14 @@ work=$(mktemp -d)
 # and every one of them should leave nothing behind.
 trap 'rm -rf "$work"' EXIT INT TERM
 
-fetch "${base}/${stage}.tar.gz" "${work}/${stage}.tar.gz"
+# A missing archive is the one failure worth naming, because it is the one a
+# user can do nothing about and the raw message for it -- a 404 out of curl --
+# reads like a broken script rather than an unsupported machine.
+if ! fetch "${base}/${stage}.tar.gz" "${work}/${stage}.tar.gz"; then
+    die "no sharpie ${version} for ${triple}.
+    Published builds are at https://github.com/${REPO}/releases/tag/v${version}
+    -- sharpie is built by \`wsharp\`, so it exists for the platforms W# does."
+fi
 fetch "${base}/${stage}.tar.gz.sha256" "${work}/${stage}.tar.gz.sha256"
 
 # The published digest is the first field; the name beside it is whatever the
