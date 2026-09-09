@@ -12,6 +12,9 @@
 #
 # `SHARPIE_HOME` says where to install; `SHARPIE_VERSION` pins a version rather
 # than taking the newest.
+#
+# This runs on Windows too, under Git Bash or MSYS, and `install.ps1` is the
+# same thing for a PowerShell that has neither.
 set -eu
 
 REPO=${SHARPIE_REPO:-sinisterMage/sharpie}
@@ -30,10 +33,10 @@ die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 # that installed it.
 #
 # Not every triple named here is published. sharpie is built by `wsharp`, so it
-# can only be built where WSharp itself has been -- today that is x86_64 Linux
-# and both Darwins. The rest are recognised anyway rather than rejected here:
-# the release either has the file or it does not, and letting the download say
-# so keeps one list instead of two that can disagree.
+# can only be built where WSharp itself has been -- today that is x86_64 Linux,
+# both Darwins and x86_64 Windows. The rest are recognised anyway rather than
+# rejected here: the release either has the file or it does not, and letting the
+# download say so keeps one list instead of two that can disagree.
 detect_triple() {
     kernel=$(uname -s)
     machine=$(uname -m)
@@ -90,6 +93,15 @@ version=${version#v}
 stage="sharpie-${version}-${triple}"
 base="https://github.com/${REPO}/releases/download/v${version}"
 
+# Windows decides whether a file can be run by its name, so the release names it
+# `sharpie.exe` -- and both ends of the copy below have to agree. Read off the
+# triple rather than from `uname` again, because the triple is the thing the
+# archive was named for.
+exe=""
+case "$triple" in
+    *-windows-*) exe=".exe" ;;
+esac
+
 say "sharpie ${version} for ${triple}"
 
 # ---------------------------------------------------------------------------
@@ -129,10 +141,10 @@ tar -xzf "${work}/${stage}.tar.gz" -C "$work"
 mkdir -p "${HOME_DIR}/bin"
 # One binary. `sharpie init` makes the proxies out of it, because deciding what
 # to proxy is sharpie's business and not this script's.
-cp "${work}/${stage}/sharpie" "${HOME_DIR}/bin/sharpie"
-chmod 0755 "${HOME_DIR}/bin/sharpie"
+cp "${work}/${stage}/sharpie${exe}" "${HOME_DIR}/bin/sharpie${exe}"
+chmod 0755 "${HOME_DIR}/bin/sharpie${exe}"
 
-"${HOME_DIR}/bin/sharpie" init
+"${HOME_DIR}/bin/sharpie${exe}" init
 
 say ""
 say "Add this to your shell's profile:"

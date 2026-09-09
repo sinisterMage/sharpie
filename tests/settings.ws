@@ -30,6 +30,10 @@
 // expect: an unknown link is null: true
 // expect: unknown keys survive a round trip: keep me
 // expect: written as an array of tables: true
+// expect: a drive root covers what is under it: 0.4.0-x86_64-pc-windows-msvc
+// expect: and does not cover another drive: true
+// expect: a deeper override under a drive root still wins: 0.5.0-x86_64-pc-windows-msvc
+// expect: another case matches exactly where the filesystem says it should: true
 const array = @import("std/array");
 const bytes = @import("std/bytes");
 const crypto = @import("std/crypto");
@@ -120,7 +124,51 @@ fn run() !void {
     print(text.concat("written as an array of tables: ",
         yes(text.find(src, "[[override]]") >= 0)));
 
+    try windows_paths(h);
+
     try fs.remove_tree(h);
+    return;
+}
+
+/// The two ways a Windows path is not a Unix one.
+///
+/// Both are string arithmetic and so can be checked from anywhere, which is
+/// the point -- neither of them was, and both were wrong.
+///
+/// A **drive root already ends in its separator**. `C:/` is what
+/// `path.normalise` makes of `C:\`, and the component test underneath
+/// `override_for` used to build its stem by appending one -- giving `C://`,
+/// which is a prefix of nothing, so an override on a drive covered no
+/// directory on it.
+///
+/// **Case is not a distinction Windows makes.** An override set from
+/// `C:\Users\Somebody` and asked for from `c:\users\somebody` is one
+/// directory there and two here, and the answer must not depend on which
+/// spelling the user's shell handed over. This asks the question in the one
+/// form that holds on both: the match happens exactly where the filesystem
+/// would say it should.
+///
+/// A settings document of its own, because the counts above are part of what
+/// the cases before this one prove.
+fn windows_paths(h: str) !void {
+    const w = try settings.read(path.join(h, "unwritten"));
+
+    settings.set_override(w, "C:\\", "0.4.0-x86_64-pc-windows-msvc");
+    show("a drive root covers what is under it",
+        settings.override_for(w, "C:/Users/Somebody/project") orelse "none");
+    print(text.concat("and does not cover another drive: ",
+        yes(absent(settings.override_for(w, "D:/Users/Somebody/project")))));
+
+    settings.set_override(w, "C:/Users/Somebody", "0.5.0-x86_64-pc-windows-msvc");
+    show("a deeper override under a drive root still wins",
+        settings.override_for(w, "C:/Users/Somebody/project") orelse "none");
+
+    // On a drive nothing else in here has an override on, so that the only
+    // thing that can answer is the row whose case differs.
+    settings.set_override(w, "E:/Work/Thing", "0.6.0-x86_64-pc-windows-msvc");
+    const matched = !absent(settings.override_for(w, "E:/WORK/THING/src"));
+    print(text.concat("another case matches exactly where the filesystem says it should: ",
+        yes(matched == home.on_windows())));
     return;
 }
 

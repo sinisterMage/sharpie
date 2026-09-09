@@ -33,7 +33,7 @@ const toolchain = @import("./toolchain.ws");
 /// believed over the other. The release workflow checks it against the tag and
 /// refuses to publish a disagreement -- which turns forgetting to bump it into
 /// a failed release rather than a binary that lies about what it is.
-pub const VERSION = "0.1.1";
+pub const VERSION = "0.1.2";
 
 pub const OK = 0;
 /// Nothing is wrong; the answer is just no. `sharpie which` when there is no
@@ -283,10 +283,7 @@ fn made(f: fault.Fault, dir: str) bool {
 
 /// One proxy: this binary's bytes under `name`, and runnable.
 ///
-/// `.exe` where the platform wants one, asked by what `self_exe` was called
-/// rather than by knowing the platform -- the same way `ingot` finds its
-/// compiler, and the only way available in a language whose one question about
-/// the platform is `os.target()`.
+/// `.exe` where the platform wants one.
 ///
 /// **Staged beside the target and `rename`d over it, never opened for writing
 /// in place.** A running executable cannot be written to -- Linux answers
@@ -296,13 +293,13 @@ fn made(f: fault.Fault, dir: str) bool {
 /// make the proxies. Writing in place failed on the first of the three and
 /// left an installation with no `wsharp` and no `ingot` in it.
 ///
-/// `rename` has no such objection: it replaces the directory entry and leaves
-/// the running image alone, which is also what makes upgrading work. Being
-/// atomic is the bonus -- an interrupted `init` leaves the old proxy rather
-/// than half of a new one.
+/// `rename` has no such objection on Unix: it replaces the directory entry and
+/// leaves the running image alone, which is also what makes upgrading work.
+/// Being atomic is the bonus -- an interrupted `init` leaves the old proxy
+/// rather than half of a new one. [`published`] has what Windows does instead.
 fn proxy_at(f: fault.Fault, h: str, name: str, image: str) bool {
     var spelled = name;
-    if (text.find(os.target(), "windows") >= 0) { spelled = text.concat(name, ".exe"); }
+    if (home.on_windows()) { spelled = text.concat(name, ".exe"); }
     const at = path.join(home.bin(h), spelled);
 
     // In the same directory, so the `rename` cannot cross a filesystem; random,
@@ -324,12 +321,69 @@ fn proxy_at(f: fault.Fault, h: str, name: str, image: str) bool {
         drop(staged);
         return false;
     };
-    fs.rename(staged, at) catch {
-        fault.fail(f, text.concat("cannot put a proxy at ", at));
+    if (!published(f, staged, at)) {
         drop(staged);
         return false;
-    };
+    }
     print(text.concat("proxy\t", at));
+    return true;
+}
+
+/// Move `staged` on to `at`, whatever is already there.
+///
+/// **Windows will not replace a file that is being run, and `rename` is where
+/// that shows up.** The loader opens an image `FILE_SHARE_READ |
+/// FILE_SHARE_DELETE`, so the running `bin\sharpie.exe` can be *renamed* but
+/// cannot be deleted -- and `MoveFileEx(..., MOVEFILE_REPLACE_EXISTING)`, which
+/// is what `fs.rename` is here, has to delete the destination to replace it. So
+/// the one step that works everywhere else is the one that fails on the first
+/// of the three proxies, and for the same reason `ETXTBSY` used to: `init` is
+/// running from the file it is writing.
+///
+/// The way out is the direction Windows *does* allow. Move the old file aside,
+/// which leaves the running image reachable under another name and the wanted
+/// name free, and then move the new one in. rustup does this and calls the
+/// leftover `.old`; so does this, and for the same reason -- a fixed name means
+/// `bin/` collects one stale file per proxy rather than one per upgrade, and
+/// the next `init` clears it before making its own.
+///
+/// Tried in that order rather than switched on the platform, because a plain
+/// `rename` is atomic and this is not: there is a moment with no `sharpie.exe`
+/// in `bin`. Unix never reaches the second half, and Windows only reaches it
+/// for the proxy that is actually running.
+fn published(f: fault.Fault, staged: str, at: str) bool {
+    if (moved(staged, at)) { return true; }
+    if (!displaced(at)) {
+        fault.fail(f, text.concat("cannot put a proxy at ", at));
+        return false;
+    }
+    if (moved(staged, at)) { return true; }
+    fault.fail(f, text.concat("cannot put a proxy at ", at));
+    return false;
+}
+
+/// Get `at` out of the way, and say whether the name is now free.
+///
+/// False when there was nothing there to move, because then the caller's
+/// `rename` failed for some other reason and retrying it would fail the same
+/// way -- reporting the first failure is more useful than reporting it twice.
+fn displaced(at: str) bool {
+    if (!io.exists(at)) { return false; }
+    const old = text.concat(at, ".old");
+    // The previous upgrade's leftover, if this is not the first. It is gone
+    // by now on any machine that has restarted the program since, and if it is
+    // not, the rename below says so rather than this line.
+    drop(old);
+    return moved(at, old);
+}
+
+/// `rename`, as a question rather than as an error.
+///
+/// A caught error does not compare against anything here, so which of the
+/// dozen filesystem reasons it was is not a question that can be put. What the
+/// caller needs is whether the file arrived.
+fn moved(from: str, to: str) bool {
+    fs.rename(from, to) catch { return false; };
     return true;
 }
 

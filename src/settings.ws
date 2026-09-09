@@ -130,13 +130,13 @@ pub fn overrides(s: Settings) []Override {
 /// *not* cover `/a/bc`. Comparing strings without that test is the bug this
 /// note exists to prevent.
 pub fn override_for(s: Settings, dir: str) ?str {
-    const want = path.normalise(dir);
+    const want = compared(dir);
     const rows = overrides(s);
     var best = "";
     var found = "";
     var i = 0;
     while (i < array.len(rows)) : (i += 1) {
-        const at = path.normalise(rows[i].dir);
+        const at = compared(rows[i].dir);
         if (!covers(at, want)) { continue; }
         if (text.len(at) < text.len(best)) { continue; }
         best = at;
@@ -150,27 +150,57 @@ pub fn override_for(s: Settings, dir: str) ?str {
 fn covers(under: str, dir: str) bool {
     if (text.eq(under, dir)) { return true; }
     // The separator is what makes this a component test rather than a prefix
-    // test. A root of `/` already ends in one.
+    // test. A root already ends in one -- `/` on Unix, and `C:/` on Windows,
+    // which is why this asks about the last byte rather than comparing against
+    // `"/"`: doing that built `C://` out of a drive root and matched nothing
+    // under it.
     var stem = under;
-    if (!text.eq(under, "/")) { stem = text.concat(under, "/"); }
+    if (!ends_in_separator(under)) { stem = text.concat(under, "/"); }
     return text.starts_with(dir, stem);
+}
+
+fn ends_in_separator(p: str) bool {
+    const n = text.len(p);
+    if (n == 0) { return false; }
+    return text.byte_at(p, n - 1) == 47; // '/'
+}
+
+/// The spelling two directories are compared in.
+///
+/// Normalised, so that `/a/b/` and `/a//b` are the one directory -- and lowered
+/// on Windows, where `C:/Users/x` and `c:/users/x` are also the one directory.
+/// A filesystem that does not distinguish two spellings would otherwise give an
+/// override set in one of them and asked for in the other, and which of those
+/// the user typed is not something the answer should depend on.
+///
+/// **Only for comparing.** What is written down keeps the case it was given,
+/// because `sharpie override list` should print the directory somebody named
+/// and not a flattened version of it.
+fn compared(dir: str) str {
+    const at = path.normalise(dir);
+    if (home.on_windows()) { return text.to_lower(at); }
+    return at;
 }
 
 /// Pin `dir` to `name`, replacing any override already on that directory.
 pub fn set_override(s: Settings, dir: str, name: str) void {
-    const want = path.normalise(dir);
+    // Two spellings of the one directory: the one that gets written down keeps
+    // its case, and the one that decides whether a row is already this
+    // directory does not. See [`compared`].
+    const want = compared(dir);
+    const written = path.normalise(dir);
     const rows = tables_at(s.root, "override");
     var i = 0;
     while (i < list.len(rows)) : (i += 1) {
         const row = as_table(list.get(rows, i));
         const at = string_at(row, "path") orelse "";
-        if (text.eq(path.normalise(at), want)) {
+        if (text.eq(compared(at), want)) {
             toml.set(row, "toolchain", toml.of_str(name));
             return;
         }
     }
     const row = toml.table();
-    toml.set(row, "path", toml.of_str(want));
+    toml.set(row, "path", toml.of_str(written));
     toml.set(row, "toolchain", toml.of_str(name));
     list.push(rows, toml.of_table(row));
     put_tables(s.root, "override", rows);
@@ -179,7 +209,7 @@ pub fn set_override(s: Settings, dir: str, name: str) void {
 
 /// Drop the override on `dir`. Answers whether there was one.
 pub fn unset_override(s: Settings, dir: str) bool {
-    const want = path.normalise(dir);
+    const want = compared(dir);
     const rows = tables_at(s.root, "override");
     var kept: list.List[toml.Value] = list.new();
     var dropped = false;
@@ -187,7 +217,7 @@ pub fn unset_override(s: Settings, dir: str) bool {
     while (i < list.len(rows)) : (i += 1) {
         const row = list.get(rows, i);
         const named = string_at(as_table(row), "path") orelse "";
-        if (text.eq(path.normalise(named), want)) {
+        if (text.eq(compared(named), want)) {
             dropped = true;
         } else {
             list.push(kept, row);

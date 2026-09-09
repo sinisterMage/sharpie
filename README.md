@@ -15,6 +15,12 @@ where they bend.
 curl -fsSL https://raw.githubusercontent.com/sinisterMage/sharpie/main/install.sh | sh
 ```
 
+On Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/sinisterMage/sharpie/main/install.ps1 | iex
+```
+
 Then put the proxies on `PATH` -- the installer prints this line with the right
 directory in it:
 
@@ -23,17 +29,22 @@ export PATH="$HOME/.sharpie/bin:$PATH"
 ```
 
 `SHARPIE_HOME` says where to install; `SHARPIE_VERSION` pins a version rather
-than taking the newest.
+than taking the newest. Both installers read both.
 
-The script assumes only `uname`, `tar` and one of `curl`/`wget`, checks what it
-downloaded against a published digest, and hands over to `sharpie init` for
-everything after that. Upgrading sharpie is running it again: it drops a new
-binary in and `init` rewrites the proxies as copies of it, which is why there
-is no `self update` verb.
+The shell script assumes only `uname`, `tar` and one of `curl`/`wget`; the
+PowerShell one assumes `tar`, which Windows has shipped since Windows 10 1803.
+Each checks what it downloaded against a published digest and hands over to
+`sharpie init` for everything after that. Upgrading sharpie is running it again:
+it drops a new binary in and `init` rewrites the proxies as copies of it, which
+is why there is no `self update` verb.
 
-Builds exist for the platforms W# itself is published for -- x86\_64 Linux, and
-both Darwins. sharpie is built *by* `wsharp`, so it cannot get ahead of that
-list.
+`install.sh` runs on Windows too, under Git Bash or MSYS -- `install.ps1` is
+there for the machine that has neither, and is otherwise the same script.
+Neither one edits `PATH` for you; they print the line to run.
+
+Builds exist for the platforms W# itself is published for -- x86\_64 Linux,
+x86\_64 Windows, and both Darwins. sharpie is built *by* `wsharp`, so it cannot
+get ahead of that list.
 
 ## Using it
 
@@ -98,10 +109,18 @@ reads which program to be from `self_exe` -- and on Linux that follows a symlink
 to its target, so a symlinked `wsharp` would see itself as `sharpie`. Three
 copies of one binary is the same trade rustup makes.
 
+On Windows everything above is spelled with `.exe`, and one thing is done
+differently. `init` writes a proxy by staging it beside its name and renaming it
+over, which on Unix replaces the file even while it is being run -- and Windows
+will not, because replacing means deleting and a running image cannot be
+deleted. So the old file is moved aside to `<name>.exe.old` first and the new
+one takes the name; the next `init` clears the leftover. That is the file
+`bin/` collects one of, and it is rustup's answer to the same rule.
+
 ## Building
 
 ```sh
-wsharp build src/main.ws -o sharpie
+wsharp build src/main.ws -o sharpie      # -o sharpie.exe on Windows
 ```
 
 The result is a self-contained native executable: the runtime archive is a

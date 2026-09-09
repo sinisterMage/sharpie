@@ -29,11 +29,33 @@ const text = @import("std/str");
 /// An empty value counts as unset, for `os.home`'s reason: a store rooted at
 /// `""` is a store rooted at the working directory, which is much worse than
 /// an error.
+///
+/// Normalised on the way out, and that is a Windows fix rather than tidiness.
+/// `USERPROFILE` is `C:\Users\somebody`, so without this every path sharpie
+/// builds carries the seam -- `C:\Users\somebody\.sharpie/toolchains/...`,
+/// backslashes on one side and slashes on the other. Windows runs such a path
+/// happily and `std/path` compares it as a different one from the same
+/// directory spelled either way, which is how an override stops matching the
+/// directory it was set on. `std/path` says none is ever produced; this is the
+/// boundary where one arrives.
 pub fn root() !str {
     if (os.get("SHARPIE_HOME")) |h| {
-        if (text.len(h) > 0) { return h; }
+        if (text.len(h) > 0) { return path.normalise(h); }
     }
-    return path.join(try os.home(), ".sharpie");
+    return path.join(path.normalise(try os.home()), ".sharpie");
+}
+
+/// Whether this is a Windows build.
+///
+/// Asked of `os.target()` because that is the only question this language has
+/// about the platform, and because it is the truthful one: it says what this
+/// binary *is*, which is what decides whether a program is spelled with `.exe`
+/// and whether a file can be replaced while it is being run.
+///
+/// Here rather than in each caller because there are three of them now, and a
+/// predicate spelled out three times is one that can come to mean three things.
+pub fn on_windows() bool {
+    return text.find(os.target(), "windows") >= 0;
 }
 
 /// The proxies: `sharpie` itself, and one per program it stands in front of.

@@ -3,12 +3,15 @@
 # Cutting one is `git tag v0.1.0 && git push origin v0.1.0`. Everything else is
 # here.
 #
-# **The matrix is three targets, and it is not an arbitrary three.** sharpie is
+# **The matrix is four targets, and it is not an arbitrary four.** sharpie is
 # built by `wsharp`, so it can only be built where a `wsharp` has been
 # published -- the matrix below is exactly WSharp's, and cannot get ahead of it.
-# There is no Windows arm and no aarch64 Linux arm for that reason and no other:
-# when WSharp publishes them, they belong here, and `install.sh` already knows
-# how to name them.
+# There is no aarch64 Linux arm for that reason and no other: when WSharp
+# publishes one, it belongs here, and `install.sh` already knows how to name it.
+#
+# Windows arrived with W# 0.1.3, which is why `WSHARP_VERSION` below is that and
+# not the 0.1.1 the other three were happy with: the toolchain this job
+# downloads to build with has to exist for the machine it is running on.
 #
 # The toolchain is downloaded rather than built, for `ci.yml`'s reason: a
 # release of a version manager should be built by the compiler its own users
@@ -36,7 +39,7 @@ permissions:
   contents: write
 
 env:
-  WSHARP_VERSION: "0.1.1"
+  WSHARP_VERSION: "0.1.3"
   # The tag being released, however this run was started. On a tag push
   # `github.ref_name` *is* the tag; on a manual run it is the branch, which is
   # never what should be packaged, so the input wins.
@@ -55,25 +58,69 @@ jobs:
         include:
           - os: ubuntu-latest
             triple: x86_64-unknown-linux-gnu
+            exe: ""
+            cc: cc
             sha: sha256sum
           - os: macos-latest
             triple: aarch64-apple-darwin
+            exe: ""
+            cc: cc
             sha: shasum -a 256
           # `macos-13` was the Intel image and was retired in December 2025;
           # a job asking for it is never claimed and queues until it times out.
           # `macos-15-intel` is the replacement label.
           - os: macos-15-intel
             triple: x86_64-apple-darwin
+            exe: ""
+            cc: cc
             sha: shasum -a 256
+          # **`.exe` is not decoration here.** Windows decides whether a file
+          # can be run by its name, `wsharp build -o` writes exactly the name it
+          # is given, and `sharpie init` looks for `sharpie.exe`. Every step
+          # below that names the binary has to carry it, and so does
+          # `install.sh` and `install.ps1` at the far end.
+          - os: windows-latest
+            triple: x86_64-pc-windows-msvc
+            exe: ".exe"
+            # Not `cc`: `wsharp` drives the link itself and passes `-o`, which
+            # `cl.exe` does not understand. clang is on the hosted image and
+            # drives `link.exe` underneath. WSharp's own release workflow says
+            # the same thing for the same reason.
+            cc: clang
+            sha: sha256sum
     defaults:
       run:
+        # Git Bash on Windows, so one script works on all four. Every `run:`
+        # below is written for it.
         shell: bash
+    env:
+      CC: ${{ matrix.cc }}
     steps:
       # The tag, not the branch: a manual re-run must package the same commit
       # the tag names, or it would publish something the tag never pointed at.
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.TAG }}
+
+      # **Git Bash ships a coreutils `link`, and it comes before MSVC's on
+      # `PATH`.** clang drives the link by running `link.exe`, so it finds the
+      # one that makes hard links instead, and fails talking about operands
+      # rather than about linking. Nothing here uses `link(1)`, so the shortest
+      # fix is to take it away. WSharp hit this first; sharpie reaches the same
+      # linker through `wsharp build`.
+      - name: Remove the link.exe that is not a linker
+        if: runner.os == 'Windows'
+        run: rm -f "/c/Program Files/Git/usr/bin/link.exe"
+
+      # clang finds the MSVC toolchain by itself and the Windows SDK's
+      # *libraries* not at all: `LIB` and `INCLUDE` are what `vcvars64.bat`
+      # exports, and without them the link cannot resolve `kernel32` and the
+      # seven others `wsharp` names. This action is that batch file with its
+      # environment hoisted into the job, which is the only way a later `run:`
+      # can see it.
+      - name: Set up the MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
 
       # **A binary that lies about its version is worse than one that will not
       # say.** `sharpie version` answers from a constant in `src/main.ws`, and
@@ -105,7 +152,12 @@ jobs:
           got=$(${{ matrix.sha }} "${stage}.tar.gz" | cut -d' ' -f1)
           [ "$want" = "$got" ] || { echo "the toolchain is not what was published" >&2; exit 1; }
           tar -xzf "${stage}.tar.gz"
-          echo "WSHARP=${PWD}/${stage}/wsharp" >> "$GITHUB_ENV"
+          echo "WSHARP=${PWD}/${stage}/wsharp${{ matrix.exe }}" >> "$GITHUB_ENV"
+
+      - name: Versions
+        run: |
+          "$WSHARP" --version
+          "$CC" --version | head -1
 
       # A tag that cannot pass its own cases is not a release. This repeats what
       # CI already did for the commit, which is the point: a tag can be pushed
@@ -115,7 +167,7 @@ jobs:
 
       - name: Build
         run: |
-          "$WSHARP" build src/main.ws -o sharpie
+          "$WSHARP" build src/main.ws -o "sharpie${{ matrix.exe }}"
 
       # What is about to be published, made to do the things it exists to do,
       # on the machine that built it. `init` is the verb `install.sh` runs the
@@ -125,10 +177,11 @@ jobs:
       - name: Smoke
         run: |
           set -eu
-          got=$(./sharpie version)
+          exe="${{ matrix.exe }}"
+          got=$("./sharpie${exe}" version)
           echo "$got"
           [ "$got" = "sharpie ${TAG#v}" ] || { echo "built binary reports \`$got\`" >&2; exit 1; }
-          ./sharpie help > /dev/null
+          "./sharpie${exe}" help > /dev/null
 
           # **From where `install.sh` puts it**, because `init` writes three
           # proxies and one of them is the file it is running from. A running
@@ -136,17 +189,41 @@ jobs:
           # in place fails on the first of the three and leaves an installation
           # with no `wsharp` and no `ingot`. Running `./sharpie init` from the
           # build directory would pass while every real install broke.
-          home="${PWD}/.sharpie-smoke"
+          #
+          # **`pwd -W` on Windows, because `$PWD` is not a path sharpie can
+          # read.** Git Bash spells this directory `/d/a/sharpie/sharpie`, which
+          # is an MSYS mount and means nothing to a native program:
+          # `sharpie.exe` would read the leading `/` as the root of the current
+          # drive and make its home at `D:\d\a\...`, while the `test -x` lines
+          # below looked at `D:\a\...` and found nothing. `SHARPIE_HOME` is not
+          # one of the variables MSYS converts on the way past, so this is the
+          # step that has to agree with itself.
+          here=$PWD
+          [ -z "${exe}" ] || here=$(pwd -W)
+          home="${here}/.sharpie-smoke"
           mkdir -p "${home}/bin"
-          cp sharpie "${home}/bin/sharpie"
-          SHARPIE_HOME="$home" "${home}/bin/sharpie" init
-          test -x "${home}/bin/wsharp"
-          test -x "${home}/bin/ingot"
-          # Idempotent, which is how upgrading refreshes the proxies.
-          SHARPIE_HOME="$home" "${home}/bin/sharpie" init > /dev/null
+          cp "sharpie${exe}" "${home}/bin/sharpie${exe}"
+          SHARPIE_HOME="$home" "${home}/bin/sharpie${exe}" init
+          test -x "${home}/bin/wsharp${exe}"
+          test -x "${home}/bin/ingot${exe}"
+
+          # Idempotent, which is how upgrading refreshes the proxies -- and on
+          # Windows this second run is the whole question rather than a
+          # repetition of the first. `rename` there is `MoveFileEx` with
+          # `MOVEFILE_REPLACE_EXISTING`, which has to *delete* what it replaces,
+          # and Windows will not delete a running image. So the proxy that is
+          # doing the writing is the one that cannot be written, and `init`
+          # falls back to moving the old file aside. If that were wrong, this
+          # line is where it would say so.
+          SHARPIE_HOME="$home" "${home}/bin/sharpie${exe}" init > /dev/null
+          test -x "${home}/bin/wsharp${exe}"
+          # And what it left behind still runs, which is the half a failed
+          # replace would take away.
+          SHARPIE_HOME="$home" "${home}/bin/sharpie${exe}" version
+
           # The proxies are copies of this binary, so one of them can be asked
           # the manager's own questions and must answer them.
-          SHARPIE_HOME="$home" "${home}/bin/sharpie" show || true
+          SHARPIE_HOME="$home" "${home}/bin/sharpie${exe}" show || true
 
       # **One binary, and no `lib/`.** That is the difference between packaging
       # sharpie and packaging the toolchain it installs: `wsharp` links and so
@@ -155,7 +232,7 @@ jobs:
       # executable, and `install.sh` copies exactly that one file.
       #
       # The checksum is a per-target sidecar rather than a shared `SHA256SUMS`,
-      # because three matrix jobs writing one file would each overwrite the
+      # because four matrix jobs writing one file would each overwrite the
       # others. `install.sh` wants one tarball and one digest anyway.
       - name: Package
         run: |
@@ -163,7 +240,7 @@ jobs:
           version="${TAG#v}"
           stage="sharpie-${version}-${{ matrix.triple }}"
           mkdir -p "dist/${stage}"
-          cp sharpie "dist/${stage}/"
+          cp "sharpie${{ matrix.exe }}" "dist/${stage}/"
           cp README.md LICENSE "dist/${stage}/"
           tar -czf "dist/${stage}.tar.gz" -C dist "${stage}"
           rm -r "dist/${stage}"
@@ -173,8 +250,8 @@ jobs:
           cat "${stage}.tar.gz.sha256"
 
       # Creates the release at this tag if it is not there yet and attaches
-      # this target's two files. Every matrix job does the same, so the three
-      # converge on one release holding six assets.
+      # this target's two files. Every matrix job does the same, so the four
+      # converge on one release holding eight assets.
       - name: Publish
         uses: softprops/action-gh-release@v2
         with:

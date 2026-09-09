@@ -22,8 +22,9 @@ on:
 env:
   # Pinned rather than `latest`, so that a WSharp release cannot change what
   # this repository builds with without a commit here saying so. Bumping it is
-  # a deliberate act and shows up in the history as one.
-  WSHARP_VERSION: "0.1.1"
+  # a deliberate act and shows up in the history as one. 0.1.3 is the first W#
+  # with a Windows build, which is what the third arm below downloads.
+  WSHARP_VERSION: "0.1.3"
 
 jobs:
   check:
@@ -36,17 +37,48 @@ jobs:
         include:
           - os: ubuntu-latest
             triple: x86_64-unknown-linux-gnu
+            exe: ""
+            cc: cc
             sha: sha256sum
           - os: macos-latest
             triple: aarch64-apple-darwin
+            exe: ""
+            cc: cc
             # macOS has no `sha256sum`. `shasum -a 256` writes the same
             # `<hex>  <name>` line, which is all anything reading it needs.
             sha: shasum -a 256
+          # **Here as well as in `release.yml`, and that is the point of this
+          # file.** The header above says a green run means the release will get
+          # that far too; a Windows arm that only existed in the release
+          # workflow would break that promise on the platform most likely to
+          # break, and would do it at a tag rather than at a pull request.
+          - os: windows-latest
+            triple: x86_64-pc-windows-msvc
+            exe: ".exe"
+            # `wsharp` drives the link itself and passes `-o`, which `cl.exe`
+            # does not understand. `release.yml` has the longer note.
+            cc: clang
+            sha: sha256sum
     defaults:
       run:
         shell: bash
+    env:
+      CC: ${{ matrix.cc }}
     steps:
       - uses: actions/checkout@v4
+
+      # Git Bash's coreutils `link` comes before MSVC's linker on `PATH`, and
+      # clang resolves the name rather than the program. `release.yml` has the
+      # longer note; the fix is the same one.
+      - name: Remove the link.exe that is not a linker
+        if: runner.os == 'Windows'
+        run: rm -f "/c/Program Files/Git/usr/bin/link.exe"
+
+      # `LIB` and `INCLUDE`, without which the link cannot resolve `kernel32`
+      # and the seven others `wsharp` names.
+      - name: Set up the MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
 
       # The toolchain, fetched and checked. Unpacked into `.wsharp/` rather
       # than a temporary directory so that the path below is stable and a
@@ -66,12 +98,12 @@ jobs:
           got=$(${{ matrix.sha }} "${stage}.tar.gz" | cut -d' ' -f1)
           [ "$want" = "$got" ] || { echo "the toolchain is not what was published" >&2; exit 1; }
           tar -xzf "${stage}.tar.gz"
-          echo "WSHARP=${PWD}/${stage}/wsharp" >> "$GITHUB_ENV"
+          echo "WSHARP=${PWD}/${stage}/wsharp${{ matrix.exe }}" >> "$GITHUB_ENV"
 
       - name: Versions
         run: |
           "$WSHARP" --version
-          cc --version | head -1
+          "$CC" --version | head -1
 
       # `WSHARP` is what `tests/run.sh` reads, and the whole reason it takes an
       # environment variable rather than looking in one place.
@@ -80,18 +112,20 @@ jobs:
 
       - name: Build
         run: |
-          "$WSHARP" build src/main.ws -o sharpie
+          "$WSHARP" build src/main.ws -o "sharpie${{ matrix.exe }}"
 
       # A binary that builds and then cannot answer `help` has not been built,
       # it has been linked. This is the cheapest thing that tells them apart,
       # and it runs the proxy path in `src/proxy.ws` on the way past -- the
       # binary has to work out that it was invoked as `sharpie` and not as a
-      # compiler before it can print anything at all.
+      # compiler before it can print anything at all. On Windows it has to take
+      # the `.exe` off its own name to do that.
       - name: Smoke
         run: |
           set -eu
-          ./sharpie version
-          ./sharpie help > /dev/null
+          exe="${{ matrix.exe }}"
+          "./sharpie${exe}" version
+          "./sharpie${exe}" help > /dev/null
 
           # **`init` is run from where `install.sh` puts the binary, not from
           # the build directory, and that difference is the whole test.** `init`
@@ -100,12 +134,29 @@ jobs:
           # it in place fails with `ETXTBSY` and leaves an installation with no
           # `wsharp` in it. Running `./sharpie init` from here instead would
           # pass while every real install broke, which is exactly what happened.
-          home="${PWD}/.sharpie-ci"
+          #
+          # **`pwd -W` on Windows, because `$PWD` is not a path sharpie can
+          # read.** Git Bash spells this directory `/d/a/sharpie/sharpie`, which
+          # is an MSYS mount and means nothing to a native program:
+          # `sharpie.exe` would read the leading `/` as the root of the current
+          # drive and make its home at `D:\d\a\...`, while the `test -x` lines
+          # below looked at `D:\a\...` and found nothing. An environment
+          # variable is not one of the ones MSYS converts on the way past, so
+          # this is the step that has to agree with itself.
+          here=$PWD
+          [ -z "${exe}" ] || here=$(pwd -W)
+          home="${here}/.sharpie-ci"
           mkdir -p "${home}/bin"
-          cp sharpie "${home}/bin/sharpie"
-          SHARPIE_HOME="$home" "${home}/bin/sharpie" init
-          test -x "${home}/bin/wsharp"
-          test -x "${home}/bin/ingot"
+          cp "sharpie${exe}" "${home}/bin/sharpie${exe}"
+          SHARPIE_HOME="$home" "${home}/bin/sharpie${exe}" init
+          test -x "${home}/bin/wsharp${exe}"
+          test -x "${home}/bin/ingot${exe}"
+
           # Again, because `init` is meant to be idempotent -- that is how a
-          # sharpie upgrade refreshes its own proxies.
-          SHARPIE_HOME="$home" "${home}/bin/sharpie" init > /dev/null
+          # sharpie upgrade refreshes its own proxies. On Windows the second run
+          # is a different test rather than the same one twice: `rename` there
+          # cannot replace a *running* image, so this is the line that says
+          # whether the fallback in `proxy_at` works.
+          SHARPIE_HOME="$home" "${home}/bin/sharpie${exe}" init > /dev/null
+          test -x "${home}/bin/wsharp${exe}"
+          SHARPIE_HOME="$home" "${home}/bin/sharpie${exe}" version
