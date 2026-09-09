@@ -1,0 +1,100 @@
+# Temporary. Delete once the Windows failure in CI run 34352577662 is understood.
+#
+# Six of the eight cases died there with exit 139 -- an MSYS bash reporting
+# `STATUS_STACK_OVERFLOW` -- and two of them managed to print Rust's "thread
+# 'main' has overflowed its stack" on the way down. `targz.ws` is among the
+# dead and nothing in this repository's Windows work touches it, so the fault
+# is below sharpie.
+#
+# The hypothesis is the *main thread's stack*. `parser.rs` says its nesting
+# limit is "sized for the compiler's main thread" and that a debug parser at
+# that limit "does not fit in the test harness's 2 MiB threads" -- and Windows
+# gives a main thread 1 MiB, where Linux gives 8. That would make `wsharp.exe`
+# the one place with less room than the tests it passes.
+#
+# This asks the machine rather than the hypothesis. Every step reports its own
+# status and carries on, because the interesting output is the whole table.
+
+name: Windows diagnosis
+
+on:
+  workflow_dispatch:
+
+env:
+  WSHARP_VERSION: "0.1.3"
+
+jobs:
+  diagnose:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      CC: clang
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Remove the link.exe that is not a linker
+        run: rm -f "/c/Program Files/Git/usr/bin/link.exe"
+
+      - name: Set up the MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Bootstrap the W# toolchain
+        run: |
+          set -eu
+          stage="wsharp-${WSHARP_VERSION}-x86_64-pc-windows-msvc"
+          base="https://github.com/sinisterMage/WSharp/releases/download/v${WSHARP_VERSION}"
+          mkdir -p .wsharp
+          curl -fsSL -o ".wsharp/${stage}.tar.gz" "${base}/${stage}.tar.gz"
+          cd .wsharp
+          tar -xzf "${stage}.tar.gz"
+          echo "WSHARP=${PWD}/${stage}/wsharp.exe" >> "$GITHUB_ENV"
+
+      # Which half is it in? `check` parses and type-checks and does not run;
+      # `run` does both and then executes. A `check` that dies is a compiler
+      # that cannot fit, and a `check` that lives with a `run` that dies is the
+      # runtime or the collector.
+      - name: check, run and build, each reporting for itself
+        run: |
+          set -u
+          say() {
+              printf '\n=== %s ===\n' "$*"
+          }
+          try() {
+              label=$1
+              shift
+              say "$label"
+              "$@" > out.txt 2> err.txt
+              status=$?
+              printf 'exit %s\n' "$status"
+              printf -- '--- stdout ---\n'
+              head -20 out.txt
+              printf -- '--- stderr ---\n'
+              head -20 err.txt
+          }
+
+          "$WSHARP" --version
+
+          # Known good in CI, for a baseline that says the toolchain runs.
+          try "run tests/fetch.ws (passed in CI)" "$WSHARP" run tests/fetch.ws
+
+          # Known bad in CI, and the smallest of them: it reads no file and
+          # calls nothing but `os.get` and `path.normalise`.
+          try "check tests/home.ws" "$WSHARP" check tests/home.ws
+          try "run tests/home.ws" "$WSHARP" run tests/home.ws
+
+          # Known bad, and the one that got a line out before it died -- so it
+          # reached `main` and the compiler is not the whole story.
+          try "check tests/targz.ws" "$WSHARP" check tests/targz.ws
+          try "run tests/targz.ws" "$WSHARP" run tests/targz.ws
+
+          # The thing the release actually needs. Parses every module sharpie
+          # has, which is more than any one case does.
+          try "check src/main.ws" "$WSHARP" check src/main.ws
+          try "build src/main.ws" "$WSHARP" build src/main.ws -o sharpie.exe
+
+          say "did a binary come out?"
+          ls -l sharpie.exe || echo "no sharpie.exe"
+          ./sharpie.exe version || echo "exit $?"
