@@ -18,6 +18,9 @@
 name: Windows diagnosis
 
 on:
+  # A pull request, because `workflow_dispatch` can only be aimed at a workflow
+  # that is already on the default branch -- and this one deliberately is not.
+  pull_request:
   workflow_dispatch:
 
 env:
