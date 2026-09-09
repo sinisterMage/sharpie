@@ -61,43 +61,58 @@ jobs:
       # runtime or the collector.
       - name: check, run and build, each reporting for itself
         run: |
+          # **`set +e` first, and it is load-bearing.** The runner starts this
+          # shell with `-e`, so the first segfault ended the previous attempt
+          # three lines in and took the rest of the table with it. The whole
+          # point here is to keep going past a crash.
+          set +e
           set -u
-          say() {
-              printf '\n=== %s ===\n' "$*"
-          }
+          say() { printf '\n=== %s ===\n' "$*"; }
           try() {
               label=$1
               shift
               say "$label"
               "$@" > out.txt 2> err.txt
-              status=$?
-              printf 'exit %s\n' "$status"
-              printf -- '--- stdout ---\n'
-              head -20 out.txt
-              printf -- '--- stderr ---\n'
-              head -20 err.txt
+              printf 'exit %s\n' "$?"
+              printf -- '--- stdout (last 10) ---\n'
+              tail -10 out.txt
+              printf -- '--- stderr (last 10) ---\n'
+              tail -10 err.txt
           }
 
           "$WSHARP" --version
 
-          # Known good in CI, for a baseline that says the toolchain runs.
-          try "run tests/fetch.ws (passed in CI)" "$WSHARP" run tests/fetch.ws
-
-          # Known bad in CI, and the smallest of them: it reads no file and
-          # calls nothing but `os.get` and `path.normalise`.
-          try "check tests/home.ws" "$WSHARP" check tests/home.ws
+          # Round one established this much: `check tests/home.ws` exits 0 and
+          # `run` segfaults, so the compiler is not where this dies. What is
+          # left is the runtime and the collector -- and the collector is the
+          # part W# 0.1.3 had just rewritten for Windows, because the root walk
+          # followed the `rbp` chain across Rust frames that Win64 does not
+          # promise. `WSHARP_GC_TRACE` prints every frame that walk visits, so a
+          # walk that is looping says so in its own words.
           try "run tests/home.ws" "$WSHARP" run tests/home.ws
+          try "run tests/home.ws, GC stats" env WSHARP_GC_STATS=1 "$WSHARP" run tests/home.ws
 
-          # Known bad, and the one that got a line out before it died -- so it
-          # reached `main` and the compiler is not the whole story.
-          try "check tests/targz.ws" "$WSHARP" check tests/targz.ws
+          say "run tests/home.ws, GC trace -- first 40 frames and last 40"
+          env WSHARP_GC_TRACE=1 "$WSHARP" run tests/home.ws > trace-out.txt 2> trace-err.txt
+          printf 'exit %s\n' "$?"
+          printf 'trace lines: %s\n' "$(wc -l < trace-err.txt)"
+          head -40 trace-err.txt
+          printf -- '--- ... ---\n'
+          tail -40 trace-err.txt
+
+          # Reached `main` and printed a line before dying, so whatever this is
+          # happens partway through rather than at startup.
           try "run tests/targz.ws" "$WSHARP" run tests/targz.ws
 
-          # The thing the release actually needs. Parses every module sharpie
-          # has, which is more than any one case does.
+          # The thing the release actually needs. `build` runs no W# code, so
+          # if the fault is in the runtime this should live -- and a Windows
+          # sharpie could still be published even while its cases cannot run
+          # here.
           try "check src/main.ws" "$WSHARP" check src/main.ws
           try "build src/main.ws" "$WSHARP" build src/main.ws -o sharpie.exe
 
-          say "did a binary come out?"
+          say "did a binary come out, and does it run?"
           ls -l sharpie.exe || echo "no sharpie.exe"
-          ./sharpie.exe version || echo "exit $?"
+          ./sharpie.exe version; printf 'exit %s\n' "$?"
+          ./sharpie.exe help > /dev/null; printf 'help exit %s\n' "$?"
+          SHARPIE_HOME="$(pwd -W)/.sharpie-probe" ./sharpie.exe init; printf 'init exit %s\n' "$?"
