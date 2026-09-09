@@ -22,9 +22,12 @@ on:
 env:
   # Pinned rather than `latest`, so that a WSharp release cannot change what
   # this repository builds with without a commit here saying so. Bumping it is
-  # a deliberate act and shows up in the history as one. 0.1.3 is the first W#
-  # with a Windows build, which is what the third arm below downloads.
-  WSHARP_VERSION: "0.1.3"
+  # a deliberate act and shows up in the history as one. 0.1.3 was the first W#
+  # with a Windows build and 0.1.4 is the first where one *works*: its collector
+  # found no roots on that platform, so every W# program there crashed as soon
+  # as it allocated enough to collect. The third arm below is why that was
+  # found, and this pin is why it stays found.
+  WSHARP_VERSION: "0.1.4"
 
 jobs:
   check:
@@ -158,9 +161,12 @@ jobs:
           # is an MSYS mount and means nothing to a native program:
           # `sharpie.exe` would read the leading `/` as the root of the current
           # drive and make its home at `D:\d\a\...`, while the `test -x` lines
-          # below looked at `D:\a\...` and found nothing. An environment
-          # variable is not one of the ones MSYS converts on the way past, so
-          # this is the step that has to agree with itself.
+          # below looked at `D:\a\...` and found nothing.
+          #
+          # MSYS *would* translate `SHARPIE_HOME` here, and correctly -- which is
+          # why the switches that turn that off are on the test step above and
+          # not on the job. This step does not rely on it either way: what it
+          # hands over is already a Windows path.
           here=$PWD
           [ -z "${exe}" ] || here=$(pwd -W)
           home="${here}/.sharpie-ci"
