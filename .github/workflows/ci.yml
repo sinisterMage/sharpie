@@ -107,7 +107,25 @@ jobs:
 
       # `WSHARP` is what `tests/run.sh` reads, and the whole reason it takes an
       # environment variable rather than looking in one place.
+      #
+      # **MSYS rewrites an environment variable that looks like a path before a
+      # native program sees it.** A case says `// env: SHARPIE_HOME=/tmp/sharpie-case`
+      # and asserts the paths built from it, and what `wsharp.exe` was handed was
+      # `C:/Users/RUNNER~1/AppData/Local/Temp/sharpie-case` -- `/tmp` is an MSYS
+      # mount, so it was translated on the way out of `env`. Every expected line
+      # then drifted, and the failure read like a bug in `home.ws` rather than in
+      # the shell that launched it.
+      #
+      # Here rather than on the job, because the smoke step below *wants* that
+      # translation: it hands sharpie a `$PWD` that only MSYS can spell. All
+      # three names, because Git Bash and MSYS2 spell the switch differently and
+      # arguments and environment are separate switches. Harmless where there is
+      # no MSYS to tell.
       - name: Test
+        env:
+          MSYS_NO_PATHCONV: "1"
+          MSYS2_ARG_CONV_EXCL: "*"
+          MSYS2_ENV_CONV_EXCL: "*"
         run: ./tests/run.sh
 
       - name: Build

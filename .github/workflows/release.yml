@@ -162,7 +162,17 @@ jobs:
       # A tag that cannot pass its own cases is not a release. This repeats what
       # CI already did for the commit, which is the point: a tag can be pushed
       # at any commit, including one CI never saw.
+      #
+      # The three MSYS switches are `ci.yml`'s, and for the reason it gives at
+      # length: a case that sets `SHARPIE_HOME=/tmp/...` has that value
+      # translated to a Windows path on the way to a native `wsharp.exe`, and
+      # every line it expects drifts. Scoped to this step because the smoke step
+      # below wants the translation it turns off.
       - name: Test
+        env:
+          MSYS_NO_PATHCONV: "1"
+          MSYS2_ARG_CONV_EXCL: "*"
+          MSYS2_ENV_CONV_EXCL: "*"
         run: ./tests/run.sh
 
       - name: Build
