@@ -98,9 +98,17 @@ work="$native/.rungs"
 rm -rf "$mine"
 mkdir -p "$work"
 
+# The two sharpie reads, so both are `$work`. **Everything a shell tool is
+# handed below is `$mine`**, and one of them is the reason the rule is written
+# down: GNU tar reads `D:/a/x.tar.gz` as `host:path` and tries to reach a machine
+# called `D`, so `-f` with the native spelling fails with
+# `Cannot connect to D: resolve failed`. `tar --force-local` would silence that
+# one; keeping the two spellings apart fixes the whole class.
 export SHARPIE_HOME="$work/home"
 export SHARPIE_RELEASE_DIR="$work/releases"
-mkdir -p "$SHARPIE_RELEASE_DIR"
+# The same directory as `$SHARPIE_RELEASE_DIR`, spelled for this shell.
+releases="$mine/releases"
+mkdir -p "$releases"
 # Nothing here may read the machine's real installation, and nothing may inherit
 # a toolchain from the environment that runs this.
 unset SHARPIE_TOOLCHAIN || true
@@ -114,42 +122,38 @@ bin="$SHARPIE_HOME/bin"
 # The fixtures: a stub, and archives that hold it
 # ---------------------------------------------------------------------------
 
-stub="$work/toolchain-stub$EXE"
-"$WSHARP" build tests/fixtures/toolchain-stub.ws -o "$stub" >/dev/null
+# Built with `$work`, because `wsharp` is a native program; copied with `$mine`,
+# because `cp` is not.
+"$WSHARP" build tests/fixtures/toolchain-stub.ws -o "$work/toolchain-stub$EXE" >/dev/null
+stub="$mine/toolchain-stub$EXE"
 
 # One release archive, laid out exactly as `release.archive_name` spells it and
 # with everything under one directory named for the version and the triple --
 # which is the shape `install.write_all` strips a component off.
+#
+# `hold` is what goes in as `wsharp`: the stub for a version that is meant to be
+# installed and run, and a line of text for the ones that exist only to fail --
+# which keeps a fault-injection rung a few hundred bytes rather than a compiler.
 archive() {
     version=$1
+    hold=${2:-stub}
     name="wsharp-$version-$triple"
-    stage="$work/stage/$name"
-    rm -rf "$work/stage"
+    stage="$mine/stage/$name"
+    rm -rf "$mine/stage"
     mkdir -p "$stage"
-    cp "$stub" "$stage/wsharp$EXE"
-    ( cd "$work/stage" && tar -czf "$SHARPIE_RELEASE_DIR/$name.tar.gz" "$name" )
-    sha256 "$SHARPIE_RELEASE_DIR/$name.tar.gz" > "$SHARPIE_RELEASE_DIR/$name.tar.gz.sha256"
-    rm -rf "$work/stage"
-}
-
-# The same, holding a text file rather than a compiled stub. For the versions
-# that are never going to be unpacked, so the fault-injection rungs cost a few
-# hundred bytes instead of a compiler each.
-paper_archive() {
-    version=$1
-    name="wsharp-$version-$triple"
-    stage="$work/stage/$name"
-    rm -rf "$work/stage"
-    mkdir -p "$stage"
-    printf 'not a compiler\n' > "$stage/wsharp$EXE"
-    ( cd "$work/stage" && tar -czf "$SHARPIE_RELEASE_DIR/$name.tar.gz" "$name" )
-    sha256 "$SHARPIE_RELEASE_DIR/$name.tar.gz" > "$SHARPIE_RELEASE_DIR/$name.tar.gz.sha256"
-    rm -rf "$work/stage"
+    if [ "$hold" = "stub" ]; then
+        cp "$stub" "$stage/wsharp$EXE"
+    else
+        printf 'not a compiler\n' > "$stage/wsharp$EXE"
+    fi
+    ( cd "$mine/stage" && tar -czf "$releases/$name.tar.gz" "$name" )
+    sha256 "$releases/$name.tar.gz" > "$releases/$name.tar.gz.sha256"
+    rm -rf "$mine/stage"
 }
 
 forget() {
     name="wsharp-$1-$triple"
-    rm -f "$SHARPIE_RELEASE_DIR/$name.tar.gz" "$SHARPIE_RELEASE_DIR/$name.tar.gz.sha256"
+    rm -f "$releases/$name.tar.gz" "$releases/$name.tar.gz.sha256"
 }
 
 # ---------------------------------------------------------------------------
@@ -365,7 +369,7 @@ rung_sharpie_toolchain() {
 rung_pin_file() {
     proj="$work/project"
     deep="$proj/src/deep/deeper"
-    mkdir -p "$deep"
+    mkdir -p "$mine/project/src/deep/deeper"
     printf 'toolchain = "0.9.0"\n' > "$mine/project/wsharp-toolchain.toml"
 
     shown "$deep" "$(full 0.9.0)" "wsharp-toolchain.toml" || return 1
@@ -613,9 +617,9 @@ rung_refuses_the_missing() {
 # release directory is cut off with its published digest left alone, which is the
 # same bytes arriving at `release.verified` -- and the same refusal.
 rung_truncated_download() {
-    paper_archive 0.9.3
+    archive 0.9.3 paper
     name="wsharp-0.9.3-$triple"
-    whole="$mine/releases/$name.tar.gz"
+    whole="$releases/$name.tar.gz"
     # Half of it, rounded down, and never zero: an empty file is a different
     # failure and gets its own rung below.
     size=$(wc -c < "$whole" | tr -d ' ')
@@ -630,7 +634,7 @@ rung_truncated_download() {
     # A truncated *sidecar* is the other half of the same accident, and it is
     # what `digest_of`'s length-and-hex check was written for: a short digest
     # compared happily against a short hash would accept anything.
-    printf '2efc18e07a58' > "$mine/releases/$name.tar.gz.sha256"
+    printf '2efc18e07a58' > "$releases/$name.tar.gz.sha256"
     sharpie install 0.9.3
     exited 2 || return 1
     says "the published checksum is not a digest" || return 1
@@ -646,11 +650,11 @@ rung_truncated_download() {
 # what a substituted or corrupted-in-transit archive looks like. Distinct from
 # the rung above in what reaches the checker, identical in what must not happen.
 rung_digest_mismatch() {
-    paper_archive 0.9.4
+    archive 0.9.4 paper
     name="wsharp-0.9.4-$triple"
     printf '%s  %s\n' \
         "0000000000000000000000000000000000000000000000000000000000000000" \
-        "$name.tar.gz" > "$mine/releases/$name.tar.gz.sha256"
+        "$name.tar.gz" > "$releases/$name.tar.gz.sha256"
 
     sharpie install 0.9.4
     exited 2 || return 1
@@ -660,7 +664,7 @@ rung_digest_mismatch() {
     # An archive replaced wholesale by something that is not even a gzip stream
     # still cannot get past the digest, which is the order `download` puts the
     # two checks in and the reason it does.
-    printf 'this is not a tarball\n' > "$mine/releases/$name.tar.gz"
+    printf 'this is not a tarball\n' > "$releases/$name.tar.gz"
     sharpie install 0.9.4
     exited 2 || return 1
     says "what was downloaded is not what was published" || return 1
@@ -683,9 +687,9 @@ rung_digest_mismatch() {
 rung_interrupted_extract() {
     version=0.9.5
     name="wsharp-$version-$triple"
-    a="$work/stage-a/$name"
-    b="$work/stage-b/$name"
-    rm -rf "$work/stage-a" "$work/stage-b"
+    a="$mine/stage-a/$name"
+    b="$mine/stage-b/$name"
+    rm -rf "$mine/stage-a" "$mine/stage-b"
     mkdir -p "$a" "$b/lib"
     printf 'not a compiler\n' > "$a/wsharp$EXE"
     printf 'and not a directory\n' > "$a/lib"
@@ -694,14 +698,14 @@ rung_interrupted_extract() {
     # Two source trees in one archive, because one filesystem cannot hold `lib`
     # as both. `tar` takes its arguments in order, which is what puts the file
     # before the thing that needs it to be a directory.
-    tar -czf "$SHARPIE_RELEASE_DIR/$name.tar.gz" \
+    tar -czf "$releases/$name.tar.gz" \
         -C "$mine/stage-a" "$name" \
         -C "$mine/stage-b" "$name/lib/extra"
-    sha256 "$SHARPIE_RELEASE_DIR/$name.tar.gz" > "$SHARPIE_RELEASE_DIR/$name.tar.gz.sha256"
+    sha256 "$releases/$name.tar.gz" > "$releases/$name.tar.gz.sha256"
 
     # The order is the whole fixture, so it is asserted rather than assumed: a
     # `tar` that sorted its members would make this rung pass for no reason.
-    members=$(tar -tzf "$mine/releases/$name.tar.gz")
+    members=$(tar -tzf "$releases/$name.tar.gz")
     first=$(printf '%s\n' "$members" | grep -n "^$name/lib\$" | head -1 | cut -d: -f1)
     second=$(printf '%s\n' "$members" | grep -n "^$name/lib/extra\$" | head -1 | cut -d: -f1)
     if [ -z "$first" ] || [ -z "$second" ] || [ "$first" -ge "$second" ]; then
@@ -722,7 +726,7 @@ rung_interrupted_extract() {
     left=$(ls "$mine/home/tmp" 2>/dev/null | wc -l | tr -d ' ')
     [ "$left" = "0" ] || { note "$left directories left under tmp/"; return 1; }
 
-    rm -rf "$work/stage-a" "$work/stage-b"
+    rm -rf "$mine/stage-a" "$mine/stage-b"
     forget "$version"
     return 0
 }
