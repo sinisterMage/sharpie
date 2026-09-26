@@ -20,9 +20,13 @@ const array = @import("std/array");
 const bytes = @import("std/bytes");
 const fault = @import("ingot/fault");
 const fetch = @import("./fetch.ws");
+const fs = @import("std/fs");
 const git = @import("ingot/git");
 const hash = @import("std/hash");
+const io = @import("std/io");
 const list = @import("std/list");
+const path = @import("std/path");
+const os = @import("std/os");
 const semver = @import("ingot/semver");
 const text = @import("std/str");
 const tls = @import("std/tls");
@@ -36,14 +40,81 @@ pub const REPO = "https://github.com/sinisterMage/WSharp";
 /// The prefix a version tag carries. `v0.1.0`, not `0.1.0`.
 const TAG_PREFIX = "refs/tags/v";
 
-/// Every version this remote has a tag for, newest first.
+/// Where a release may be read from instead, with no network at all.
 ///
-/// Opens a socket; everything else in this module does not.
+/// **A release source is a directory, and publishing one over HTTPS is only how
+/// the directory usually arrives.** `SHARPIE_RELEASE_DIR` naming an existing
+/// directory is used where it lies: no socket is opened, no certificate store is
+/// read, and the archives are found by the same names [`archive_name`] spells
+/// for the published ones. The shape is `INGOT_REGISTRY`'s and it is here for
+/// the same reason -- a test that has to stand up a peer is a test that does not
+/// get run, and the three ways an install can go wrong on the way in
+/// (a short archive, a digest that does not match, an extraction that stops part
+/// way) are exactly the ones worth being able to inject.
+///
+/// It is not a mirror list and not a fallback: set, it is the only place looked
+/// at, so a rung that should have refused cannot quietly succeed against the
+/// real releases instead.
+pub const DIR_VAR = "SHARPIE_RELEASE_DIR";
+
+/// The local release directory, or null.
+///
+/// An empty value counts as unset, for `home.root`'s reason: a release source
+/// rooted at `""` is one rooted at the working directory, which is much worse
+/// than not having one.
+pub fn local() ?str {
+    const at = os.get(DIR_VAR) orelse return null;
+    if (text.len(at) == 0) { return null; }
+    return at;
+}
+
+/// Every version that can be installed, newest first.
+///
+/// Opens a socket, unless [`local`] says where to look instead; everything else
+/// in this module does not.
 pub fn available(f: fault.Fault, cfg: tls.Config) []semver.Version {
+    if (local()) |at| { return published_in(f, at, os.target()); }
     const refs = git.discover(f, git.Remote{ .url = REPO, .cfg = cfg }) orelse {
         return []semver.Version{};
     };
     return versions_of(refs);
+}
+
+/// Every version a local release directory holds an archive for, newest first.
+fn published_in(f: fault.Fault, at: str, triple: str) []semver.Version {
+    const names = fs.read_dir(at) catch {
+        fault.fail(f, text.concat("cannot read the release directory at ", at));
+        return []semver.Version{};
+    };
+    return versions_in(names, triple);
+}
+
+/// The versions among a directory's file names, newest first.
+///
+/// [`archive_name`] read backwards, which is what makes a local directory answer
+/// the same question the remote's tags do without being able to lie about it: a
+/// version is advertised only when *its own* archive for *this* triple is there,
+/// so nothing can be offered that then cannot be fetched. A remote's tag list
+/// has no such property, which is why [`download`] has a paragraph about a tag
+/// existing before its release does and this does not need one.
+pub fn versions_in(names: []str, triple: str) []semver.Version {
+    const head = "wsharp-";
+    const tail = text.concat(text.concat("-", triple), ".tar.gz");
+    var out = []semver.Version{};
+    var i = 0;
+    while (i < array.len(names)) : (i += 1) {
+        const name = names[i];
+        if (!text.starts_with(name, head)) { continue; }
+        if (!ends_with(name, tail)) { continue; }
+        // Both ends are known, so the middle is the version. A name that is
+        // only the two ends leaves nothing, and `semver.parse` refuses it.
+        const cut = text.len(name) - text.len(tail);
+        if (cut <= text.len(head)) { continue; }
+        const spelled = text.substr(name, text.len(head), cut);
+        const v = semver.parse(spelled) orelse continue;
+        out = array.push(out, v);
+    }
+    return sorted(out);
 }
 
 /// The versions among a remote's refs, newest first.
@@ -224,6 +295,7 @@ pub fn digest_of(sidecar: str) !{BadFormat}str {
 /// alongside. Both go through `fetch.get`, because a release download is a
 /// redirect to another host.
 pub fn download(f: fault.Fault, v: semver.Version, triple: str, cfg: tls.Config) ?str {
+    if (local()) |at| { return read_local(f, at, v, triple); }
     const url = archive_url(v, triple);
     const sidecar = fetch.get(checksum_url(v, triple), cfg) catch {
         // **A tag exists before its release does.** Versions are discovered by
@@ -253,6 +325,44 @@ pub fn download(f: fault.Fault, v: semver.Version, triple: str, cfg: tls.Config)
     };
     const ok = verified(archive, want) catch {
         fault.fail(f, text.concat("what was downloaded is not what was published: ", url));
+        return null;
+    };
+    return ok;
+}
+
+/// The same two files out of a local release directory.
+///
+/// **The digest is checked here exactly as a download's is, by the same two
+/// functions and in the same order.** That is the whole point of the offline
+/// path: a directory standing in for a published release has to be able to be
+/// wrong in the ways a network can be wrong, or the checking that catches those
+/// has nothing driving it. A short archive and a substituted one both fail
+/// [`verified`], and a truncated sidecar fails [`digest_of`] -- which is what its
+/// length-and-hex check was written for and what nothing exercised until now.
+///
+/// A missing sidecar reads the same way the network's missing one does. The
+/// remote's reason ("the release may still be building") does not apply to a
+/// directory, so the wording says what is true of a directory instead.
+fn read_local(f: fault.Fault, at: str, v: semver.Version, triple: str) ?str {
+    const name = archive_name(v, triple);
+    const beside = path.join(at, text.concat(name, ".sha256"));
+    const sidecar = io.read_file(beside) catch {
+        fault.fail(f, text.concat(text.concat("no archive published for ", triple),
+            text.concat(text.concat(" at ", semver.render(v)),
+                text.concat(" -- nothing is beside it at ", beside))));
+        return null;
+    };
+    const want = digest_of(sidecar) catch {
+        fault.fail(f, text.concat("the published checksum is not a digest: ", beside));
+        return null;
+    };
+    const whole = path.join(at, name);
+    const archive = io.read_file(whole) catch {
+        fault.fail(f, text.concat("cannot download ", whole));
+        return null;
+    };
+    const ok = verified(archive, want) catch {
+        fault.fail(f, text.concat("what was downloaded is not what was published: ", whole));
         return null;
     };
     return ok;
