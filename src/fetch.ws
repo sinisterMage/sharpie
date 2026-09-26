@@ -41,6 +41,20 @@ pub fn anchors() !tls.Config {
     return tls.roots_config("", try x509.system_roots());
 }
 
+/// A configuration for a path that is not going to open a socket.
+///
+/// `install` from a local release directory reads files, and reading the
+/// platform's whole root store to do it would cost a handshake's worth of
+/// parsing for nothing -- and would *fail* on a machine that has no store,
+/// turning "read these two files" into "this container has no
+/// `ca-certificates`". Trusting nothing is the honest value: anything that tried
+/// to use it would refuse every certificate rather than accept a wrong one, so
+/// the offline path staying offline is checked by the type rather than promised
+/// in a comment.
+pub fn no_anchors() tls.Config {
+    return tls.roots_config("", x509.parse_all([][]u8{}));
+}
+
 /// `GET url`, following redirects, and answer with what finally replied.
 ///
 /// The answer is the *last* response, so a caller still sees a 404 as a 404.

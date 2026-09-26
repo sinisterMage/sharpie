@@ -75,7 +75,19 @@ Five things can decide, and the first that answers wins:
 
 The order is rustup's, and each rung is more specific and more deliberate than
 the one below it. `sharpie show` prints which one answered, because that is the
-first question when the answer surprises somebody.
+first question when the answer surprises somebody:
+
+```
+$ sharpie show
+home        /home/me/.sharpie
+target      x86_64-unknown-linux-gnu
+toolchain   0.2.3-x86_64-unknown-linux-gnu   wsharp-toolchain.toml
+directory   /home/me/.sharpie/toolchains/0.2.3-x86_64-unknown-linux-gnu
+```
+
+`show` and `which` take a leading `+name` too, so the top rung can be explained
+without being run -- `sharpie +0.1.0 show` answers what `wsharp +0.1.0` would do.
+No other verb takes one, and each of them says so rather than ignoring it.
 
 A rung naming a toolchain that is not installed **stops there** rather than
 falling through to the next one: quietly running a different compiler than the
@@ -98,6 +110,30 @@ a directory:
 `SHARPIE_HOME` moves all of it. It is deliberately **not** `WSHARP_HOME`, which
 is `ingot`'s content-addressed package store and a different thing -- the split
 is `RUSTUP_HOME` and `CARGO_HOME`'s.
+
+## Where a release comes from
+
+By default, the tags and the release assets on
+[the W# repository](https://github.com/sinisterMage/WSharp): `install` asks the
+remote for its tags over git's smart HTTP transport, and fetches
+`wsharp-<version>-<triple>.tar.gz` and the `.sha256` beside it. What arrives is
+checked against the published digest before anything is unpacked.
+
+`SHARPIE_RELEASE_DIR` naming a directory is used **where it lies**, and then no
+socket is opened and the machine's certificate store is not read. The directory
+holds the same two file names per release:
+
+```
+wsharp-0.2.3-x86_64-unknown-linux-gnu.tar.gz
+wsharp-0.2.3-x86_64-unknown-linux-gnu.tar.gz.sha256
+```
+
+A version is offered only when *its own* archive for *this* triple is there, and
+the digest beside it is checked exactly as a download's is. That is what makes an
+air-gapped install, a mirror on a shared filesystem, and `tests/rungs.sh` the
+same code path rather than three -- the same shape `ingot`'s `INGOT_REGISTRY`
+has, for the same reason. It is not a fallback: set, it is the only place looked
+at, so a machine configured this way cannot silently reach the internet instead.
 
 Two existing rules make this work with no changes to either program: `wsharp`
 looks for its runtime archive beside itself and under `../lib`, and `ingot`
@@ -129,21 +165,48 @@ what makes it a bootstrap -- one file, and it can go and get the rest.
 
 ## Tests
 
+Two suites, and they test different things.
+
 ```sh
 ./tests/run.sh                        # uses ../WSharp/target/debug/wsharp
 WSHARP=/path/to/wsharp ./tests/run.sh
 ```
 
 Each case is a `.ws` program whose header holds one `// expect:` line per line
-it prints, which is the contract the compiler's own case suite uses. They run
-without a network: `tests/fixtures/` holds a real released tarball and a small
-one whose every member is known, and the archive reader is written against
-bytes rather than against a socket so that both halves can be checked here.
+it prints, which is the contract the compiler's own case suite uses. They reach
+into `src/` and ask each function what it answers. They run without a network:
+`tests/fixtures/` holds a real released tarball and a small one whose every
+member is known, and the archive reader is written against bytes rather than
+against a socket so that both halves can be checked here.
 
-CI runs the same script against a *released* `wsharp` rather than one built from
-a WSharp working tree, which keeps a standing check on the thing that would
-otherwise rot silently: sharpie has to keep compiling with the compiler its
-users actually have.
+```sh
+wsharp build src/main.ws -o sharpie
+./tests/rungs.sh                      # or SHARPIE=./sharpie.exe ./tests/rungs.sh
+```
+
+`tests/rungs.sh` drives the **built binary**, one line per resolution rung: a
+fresh install, an upgrade, each of the five rungs above with the attribution
+`sharpie show` gives it, `update` following a channel while leaving a project's
+pin alone, a rollback (which is `sharpie default <previous>` -- there is no
+separate verb, because every toolchain an update installed is still there under
+its own name), an uninstall, a rung naming something that is not installed
+refusing rather than falling through, and three fault injections: a truncated
+download, a digest mismatch, and an extraction that stops part way. Each of the
+three has to leave the toolchain that was working still working.
+
+It needs no network and no peer. The releases are a directory it builds for
+itself under `SHARPIE_RELEASE_DIR`, holding archives made from a stub compiled by
+the same `wsharp` -- so a rung can exec a proxy and have the program on the far
+side say which toolchain it came out of. It does need a C compiler, because it
+builds that stub.
+
+CI runs both against a *released* `wsharp` rather than one built from a WSharp
+working tree, which keeps a standing check on the thing that would otherwise rot
+silently: sharpie has to keep compiling with the compiler its users actually
+have. All four release triples --
+`x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, `x86_64-apple-darwin` and
+`aarch64-apple-darwin` -- run the whole of both, because a platform claimed by
+inference from another platform's run is not evidence.
 
 ## Licence
 

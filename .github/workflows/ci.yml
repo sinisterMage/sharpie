@@ -50,6 +50,19 @@ jobs:
             # macOS has no `sha256sum`. `shasum -a 256` writes the same
             # `<hex>  <name>` line, which is all anything reading it needs.
             sha: shasum -a 256
+          # **The fourth release triple, and it is here because the criterion
+          # says a platform claimed by inference from another platform's run is
+          # not evidence.** Apple silicon and Intel are two builds of two
+          # different compilers running two different collectors; one of them
+          # passing says nothing about the other. `macos-13` was the Intel image
+          # and was retired in December 2025, so `macos-15-intel` is the label --
+          # the same one `WSharp`'s own workflows use, which is where a release
+          # for this triple actually comes from.
+          - os: macos-15-intel
+            triple: x86_64-apple-darwin
+            exe: ""
+            cc: cc
+            sha: shasum -a 256
           # **Here as well as in `release.yml`, and that is the point of this
           # file.** The header above says a green run means the release will get
           # that far too; a Windows arm that only existed in the release
@@ -184,3 +197,23 @@ jobs:
           SHARPIE_HOME="$home" "${home}/bin/sharpie${exe}" init > /dev/null
           test -x "${home}/bin/wsharp${exe}"
           SHARPIE_HOME="$home" "${home}/bin/sharpie${exe}" version
+
+      # **Every resolution rung, through the binary that was just built.** The
+      # step above proves it links and can be run; this one is the whole ladder,
+      # a real `~/.sharpie` with toolchains unpacked into it, an `exec` through a
+      # proxy, and the three ways an install can fail without taking the previous
+      # toolchain with it. It needs no network and no peer: the releases are a
+      # directory it makes for itself.
+      #
+      # After `Build`, because it runs the built sharpie; it also builds a stub
+      # with `wsharp`, so `CC` has to be the same working one the step above
+      # used.
+      - name: Rungs
+        env:
+          # The switches on the `Test` step, for the same reason and with the
+          # same caveat: `rungs.sh` hands sharpie paths it spelled with `pwd -W`
+          # itself, so it wants no translation of anything.
+          MSYS_NO_PATHCONV: "1"
+          MSYS2_ARG_CONV_EXCL: "*"
+          MSYS2_ENV_CONV_EXCL: "*"
+        run: SHARPIE="./sharpie${{ matrix.exe }}" ./tests/rungs.sh

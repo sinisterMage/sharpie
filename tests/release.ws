@@ -23,6 +23,10 @@
 // expect: resolve a version: 0.1.0
 // expect: resolve nonsense: none
 // expect: nothing at all resolves to nothing: true
+// expect: a directory advertises: 0.2.0 0.2.0-rc2 0.1.0
+// expect: for another triple: 0.9.0
+// expect: for a triple it holds nothing for: -
+// expect: an empty directory advertises nothing: true
 // expect: archive name: wsharp-0.1.0-x86_64-unknown-linux-gnu.tar.gz
 // expect: archive url: https://github.com/sinisterMage/WSharp/releases/download/v0.1.0/wsharp-0.1.0-x86_64-unknown-linux-gnu.tar.gz
 // expect: checksum url ends in .sha256: true
@@ -88,6 +92,32 @@ fn main() i64 {
     print(text.concat("nothing at all resolves to nothing: ",
         yes(array.len(empty) == 0 and absent(release.latest(empty)))));
 
+    // What a local release directory advertises, which is `archive_name` read
+    // backwards. Everything here is a name a real directory can hold: two
+    // triples' archives side by side, the sidecars beside them, and the files a
+    // person left in the way.
+    const room = []str{
+        "wsharp-0.1.0-x86_64-unknown-linux-gnu.tar.gz",
+        "wsharp-0.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256",
+        "wsharp-0.2.0-rc2-x86_64-unknown-linux-gnu.tar.gz",
+        "wsharp-0.2.0-x86_64-unknown-linux-gnu.tar.gz",
+        "wsharp-0.9.0-aarch64-apple-darwin.tar.gz",
+        // Neither of these is a version, and neither may be offered as one.
+        "wsharp--x86_64-unknown-linux-gnu.tar.gz",
+        "wsharp-banana-x86_64-unknown-linux-gnu.tar.gz",
+        "notes.txt",
+    };
+    print(text.concat("a directory advertises: ",
+        spelled(release.versions_in(room, "x86_64-unknown-linux-gnu"))));
+    // The triple is part of the question, so a machine cannot be offered a
+    // version whose archive is for another one.
+    print(text.concat("for another triple: ",
+        spelled(release.versions_in(room, "aarch64-apple-darwin"))));
+    print(text.concat("for a triple it holds nothing for: ",
+        spelled(release.versions_in(room, "x86_64-pc-windows-msvc"))));
+    print(text.concat("an empty directory advertises nothing: ",
+        yes(array.len(release.versions_in([]str{}, "x86_64-unknown-linux-gnu")) == 0)));
+
     const v = semver.parse("0.1.0") orelse semver.zero();
     print(text.concat("archive name: ",
         release.archive_name(v, "x86_64-unknown-linux-gnu")));
@@ -139,6 +169,16 @@ fn spell(vs: []semver.Version) str {
         out = text.concat(out, semver.render(vs[i]));
     }
     return out;
+}
+
+/// [`spell`], with `-` for none.
+///
+/// A case cannot expect a trailing space -- `tests/run.sh` trims each `expect`
+/// line -- so an empty answer has to print something, which is the rule
+/// `ingot_manifest.ws` follows upstream and the character it uses.
+fn spelled(vs: []semver.Version) str {
+    if (array.len(vs) == 0) { return "-"; }
+    return spell(vs);
 }
 
 fn show(label: str, v: ?semver.Version) void {

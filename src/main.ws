@@ -24,6 +24,7 @@ const release = @import("./release.ws");
 const semver = @import("ingot/semver");
 const settings = @import("./settings.ws");
 const text = @import("std/str");
+const tls = @import("std/tls");
 const toolchain = @import("./toolchain.ws");
 
 /// This sharpie's version.
@@ -65,9 +66,37 @@ fn report(f: fault.Fault) void {
 }
 
 fn verb(f: fault.Fault, args: []str) i64 {
-    if (array.len(args) == 0) { usage(); return FAILED; }
-    const name = args[0];
-    const rest = array.slice(args, 1, array.len(args));
+    // **A leading `+toolchain` is sharpie's own wherever it appears, and `show`
+    // is the verb that most needs to see one.** `show` exists to name the rung
+    // that answered, and the top rung is the `+` argument -- so a `show` that
+    // could not be given one had a hole in exactly the explanation it is for,
+    // and the only way to ask "what would `wsharp +0.1.4` run" was to run it.
+    // `which` takes it for the same reason: the two answer the same question,
+    // one in prose and one as a path.
+    //
+    // Every other verb *refuses* it rather than ignoring it. `sharpie +0.1.4
+    // install stable` looks like it says something about which toolchain to
+    // install into, and quietly dropping it would be the worst of the three
+    // possible answers.
+    const ladder = plus_args(args);
+    const line = toolchain.without_plus(args);
+    if (array.len(line) == 0) { usage(); return FAILED; }
+    const name = line[0];
+    const rest = array.slice(line, 1, array.len(line));
+
+    if (text.eq(name, "show")) { return show(f, ladder); }
+    if (text.eq(name, "which")) { return which(f, rest, ladder); }
+
+    // Past here nothing consults the ladder, so a `+` that arrived is a
+    // misunderstanding worth saying out loud. Before the other verbs rather
+    // than after them, so that `sharpie +0.1.4 nonsense` reports the argument
+    // that cannot be honoured rather than the verb that does not exist.
+    if (array.len(ladder) > 0) {
+        fault.fail(f, text.concat(text.concat("`", ladder[0]),
+            text.concat("` belongs in front of a proxied command, or of `show` or `which`; `",
+                text.concat(name, "` does not take one"))));
+        return FAILED;
+    }
 
     if (text.eq(name, "help") or text.eq(name, "--help") or text.eq(name, "-h")) {
         usage();
@@ -80,8 +109,6 @@ fn verb(f: fault.Fault, args: []str) i64 {
         print(text.concat("sharpie ", VERSION));
         return OK;
     }
-    if (text.eq(name, "show")) { return show(f); }
-    if (text.eq(name, "which")) { return which(f, rest); }
     if (text.eq(name, "default")) { return set_default(f, rest); }
     if (text.eq(name, "toolchain")) { return toolchain_verb(f, rest); }
     if (text.eq(name, "init")) { return init_verb(f); }
@@ -98,12 +125,24 @@ fn verb(f: fault.Fault, args: []str) i64 {
 // The verbs that need no network
 // ---------------------------------------------------------------------------
 
+/// A leading `+toolchain` on its own, as a command line the ladder can read.
+///
+/// The ladder's top rung is spelled as an argument, so the way to ask it about
+/// one is to hand it the argument -- `toolchain.asked` reads `args[0]` and does
+/// not care that the rest of this program's command line is not there. Empty
+/// when none was given, which is what every rung below sees.
+fn plus_args(args: []str) []str {
+    const named = toolchain.plus_toolchain(args) orelse return []str{};
+    return array.slice(args, 0, 1);
+}
+
 /// What would run here, and why.
 ///
 /// The *why* is the point. Five things can decide which toolchain applies, and
 /// when the answer surprises somebody the first question is always which of
-/// them answered.
-fn show(f: fault.Fault) i64 {
+/// them answered. `ladder` is a leading `+toolchain` when one was given, so that
+/// the top rung can be explained as well as the four that live on disk.
+fn show(f: fault.Fault, ladder: []str) i64 {
     const h = opened(f) orelse return FAILED;
     const s = read_settings(f, h) orelse return FAILED;
     const cwd = os.cwd() catch ".";
@@ -111,8 +150,8 @@ fn show(f: fault.Fault) i64 {
     print(text.concat("home\t", h));
     print(text.concat("target\t", os.target()));
 
-    const chosen = toolchain.choose(h, s, []str{}, cwd) orelse {
-        print(text.concat("toolchain\t-\t", toolchain.why_nothing(s, []str{}, cwd)));
+    const chosen = toolchain.choose(h, s, ladder, cwd) orelse {
+        print(text.concat("toolchain\t-\t", toolchain.why_nothing(s, ladder, cwd)));
         return NOTHING;
     };
     print(text.concat(text.concat("toolchain\t", chosen.name),
@@ -122,7 +161,7 @@ fn show(f: fault.Fault) i64 {
 }
 
 /// Where the program that would run actually lives.
-fn which(f: fault.Fault, args: []str) i64 {
+fn which(f: fault.Fault, args: []str, ladder: []str) i64 {
     if (array.len(args) != 1) {
         fault.fail(f, "`which` takes one command, such as `sharpie which wsharp`");
         return FAILED;
@@ -130,8 +169,8 @@ fn which(f: fault.Fault, args: []str) i64 {
     const h = opened(f) orelse return FAILED;
     const s = read_settings(f, h) orelse return FAILED;
     const cwd = os.cwd() catch ".";
-    const chosen = toolchain.choose(h, s, []str{}, cwd) orelse {
-        fault.fail(f, toolchain.why_nothing(s, []str{}, cwd));
+    const chosen = toolchain.choose(h, s, ladder, cwd) orelse {
+        fault.fail(f, toolchain.why_nothing(s, ladder, cwd));
         return FAILED;
     };
     const at = toolchain.program(chosen.dir, args[0]) orelse {
@@ -414,14 +453,11 @@ fn install_verb(f: fault.Fault, args: []str) i64 {
     const h = opened(f) orelse return FAILED;
     const s = read_settings(f, h) orelse return FAILED;
 
-    const cfg = fetch.anchors() catch {
-        fault.fail(f, "cannot read this machine's certificate store");
-        return FAILED;
-    };
+    const cfg = anchors(f) orelse return FAILED;
     const versions = release.available(f, cfg);
     if (!f.ok) { return FAILED; }
     if (array.len(versions) == 0) {
-        fault.fail(f, text.concat("no releases are published at ", release.REPO));
+        fault.fail(f, text.concat("no releases are published at ", where()));
         return FAILED;
     }
     const want = release.resolve(versions, args[0]) orelse {
@@ -498,10 +534,7 @@ fn update_verb(f: fault.Fault) i64 {
         fault.fail(f, "nothing was installed from a channel; `sharpie install stable` starts one");
         return NOTHING;
     };
-    const cfg = fetch.anchors() catch {
-        fault.fail(f, "cannot read this machine's certificate store");
-        return FAILED;
-    };
+    const cfg = anchors(f) orelse return FAILED;
     const versions = release.available(f, cfg);
     if (!f.ok) { return FAILED; }
     const want = release.resolve(versions, chan) orelse {
@@ -640,6 +673,26 @@ fn opened(f: fault.Fault) ?str {
     return h;
 }
 
+/// A trust store, unless nothing is going to be fetched.
+///
+/// A local release directory opens no socket, so it does not pay for the
+/// platform's root store -- which is most of the cost of a download and is a
+/// thing a bare container may not have at all.
+fn anchors(f: fault.Fault) ?tls.Config {
+    if (release.local()) |at| { return fetch.no_anchors(); }
+    const cfg = fetch.anchors() catch {
+        fault.fail(f, "cannot read this machine's certificate store");
+        return null;
+    };
+    return cfg;
+}
+
+/// Where a release is being looked for, for a message that has to name it.
+fn where() str {
+    const at = release.local() orelse return release.REPO;
+    return at;
+}
+
 fn read_settings(f: fault.Fault, h: str) ?settings.Settings {
     const s = settings.read(h) catch {
         fault.fail(f, text.concat(text.concat("cannot read ", home.settings(h)),
@@ -667,13 +720,15 @@ fn usage() void {
     print("  help                          this");
     print("");
     print("A toolchain is chosen by the first of these that answers:");
-    print("  1. `+name` in front of a proxied command");
+    print("  1. `+name` in front of a proxied command, or of `show` or `which`");
     print("  2. SHARPIE_TOOLCHAIN");
     print("  3. wsharp-toolchain.toml, looked for from here upwards");
     print("  4. a directory override");
     print("  5. the default");
     print("");
     print("SHARPIE_HOME says where toolchains live; it is not WSHARP_HOME,");
-    print("which is where `ingot` keeps packages. Output is tab-separated.");
+    print("which is where `ingot` keeps packages. SHARPIE_RELEASE_DIR names a");
+    print("directory of release archives to install from instead of the");
+    print("network. Output is tab-separated.");
     return;
 }
