@@ -36,7 +36,9 @@ PowerShell one assumes `tar`, which Windows has shipped since Windows 10 1803.
 Each checks what it downloaded against a published digest and hands over to
 `sharpie init` for everything after that. Upgrading sharpie is running it again:
 it drops a new binary in and `init` rewrites the proxies as copies of it, which
-is why there is no `self update` verb.
+is why there is no `self update` verb. The new binary is written beside the old
+one and renamed over it, never copied on to it, so an upgrade cut short part way
+leaves the sharpie that was there rather than half of the new one.
 
 `install.sh` runs on Windows too, under Git Bash or MSYS -- `install.ps1` is
 there for the machine that has neither, and is otherwise the same script.
@@ -217,7 +219,15 @@ naming something that is not installed refusing rather than falling through, a
 rung or a verb naming a path refusing likewise, a toolchain whose programs are
 gone being installed again rather than trusted, and three fault injections: a
 truncated download, a digest mismatch, and an extraction that stops part way.
-Each of the three has to leave the toolchain that was working still working.
+Each of the three has to leave the toolchain that was working still working. A
+last rung runs `install.sh` itself, offline, and cuts its copy short part way:
+the `bin/sharpie` that was there has to still be there, byte for byte.
+`tests/install-ps1.ps1` does the same to `install.ps1`, and CI runs it under
+Windows PowerShell 5.1 on Windows and PowerShell 7 everywhere else:
+
+```sh
+pwsh tests/install-ps1.ps1 -Sharpie ./sharpie
+```
 
 It needs no network and no peer. The releases are a directory it builds for
 itself under `SHARPIE_RELEASE_DIR`, holding archives made from a stub compiled by

@@ -932,6 +932,129 @@ rung_interrupted_extract() {
     return 0
 }
 
+# Upgrading sharpie itself, which is `install.sh` run again -- and one that stops
+# part way leaving the sharpie that was there.
+#
+# `install.sh` used to `cp` the new binary on to `bin/sharpie`, and `cp` truncates
+# what it writes over: an upgrade interrupted mid-copy (a full disk, a Ctrl-C, a
+# closed laptop) left half a binary under the one name every proxy is made from.
+# It stages beside that name and renames now, as `init` does for the proxies.
+#
+# **Offline, and with the interruption injected rather than hoped for**, for
+# `rung_interrupted_extract`'s reason. The release is a directory; a `curl` in
+# front of the real one on `PATH` answers from it by the last component of the
+# URL, which is the whole of what `install.sh` asks of `curl` when
+# `SHARPIE_VERSION` is set. The interruption is a `cp` in front of the real one
+# that writes the first half of the file and fails, which is the state a real
+# interruption leaves, every time.
+#
+# Its own home, so nothing here touches the one the rungs above built -- and
+# `$mine` for everything the shell is handed, because `PATH` is colon-separated
+# and `D:/a/...` has a colon in it.
+rung_self_upgrade() {
+    version=9.8.7
+    name="sharpie-$version-$triple"
+    shelf="$mine/selfrel"
+    fetching="$mine/shims-fetch"
+    cut_short="$mine/shims-cut"
+    rm -rf "$shelf" "$fetching" "$cut_short" "$mine/stage" "$mine/selfhome"
+    mkdir -p "$shelf" "$fetching" "$cut_short" "$mine/stage/$name"
+
+    # A release of the sharpie under test, laid out as the release workflow
+    # lays one out.
+    cp "$SHARPIE" "$mine/stage/$name/sharpie$EXE"
+    ( cd "$mine/stage" && tar -czf "$shelf/$name.tar.gz" "$name" )
+    sha256 "$shelf/$name.tar.gz" > "$shelf/$name.tar.gz.sha256"
+    rm -rf "$mine/stage"
+
+    cat > "$fetching/curl" <<'SHIM'
+#!/bin/sh
+# `curl -o <file> <url>`, answered from $SHIM_SHELF. See `rung_self_upgrade`.
+out=""
+url=""
+while [ $# -gt 0 ]; do
+    case $1 in
+        -o) out=$2; shift 2 ;;
+        --proto | -w) shift 2 ;;
+        -*) shift ;;
+        *) url=$1; shift ;;
+    esac
+done
+file="$SHIM_SHELF/${url##*/}"
+[ -f "$file" ] || exit 22
+cat "$file" > "$out"
+SHIM
+    cp "$fetching/curl" "$cut_short/curl"
+    cat > "$cut_short/cp" <<'SHIM'
+#!/bin/sh
+# `cp <from> <to>`, interrupted half way: the first half of the file, then a
+# failure. See `rung_self_upgrade`.
+size=$(wc -c < "$1" | tr -d ' ')
+dd if="$1" of="$2" bs=1024 count=$((size / 2048)) 2>/dev/null
+exit 1
+SHIM
+    chmod +x "$fetching/curl" "$cut_short/curl" "$cut_short/cp"
+
+    selfbin="$mine/selfhome/bin"
+
+    # A first install, which is the ordinary path and has to keep working.
+    installer "$fetching"
+    exited 0 || return 1
+    says "sharpie $version for $triple" || return 1
+    whole || return 1
+    [ -x "$selfbin/wsharp$EXE" ] || { note "install.sh made no wsharp proxy"; return 1; }
+
+    # The upgrade that is cut short. It fails -- and the sharpie that was there
+    # is still there, whole, with nothing half-written left beside it.
+    installer "$cut_short"
+    if [ "$status" -eq 0 ]; then
+        note "install.sh succeeded with its copy cut short"
+        return 1
+    fi
+    whole || return 1
+    # Three, not counting the `.old` that Windows' first `init` leaves beside a
+    # proxy it could not replace while running it.
+    left=$(ls "$selfbin" | grep -v '\.old$' | wc -l | tr -d ' ')
+    [ "$left" = "3" ] || { note "bin/ holds $left files: $(ls "$selfbin" | tr '\n' ' ')"; return 1; }
+
+    # And the upgrade that is not, over the binary that is there: the rename
+    # has to replace it.
+    installer "$fetching"
+    exited 0 || return 1
+    whole || return 1
+
+    rm -rf "$shelf" "$fetching" "$cut_short" "$mine/selfhome"
+    return 0
+}
+
+# Whether the installed sharpie is the whole binary, and runs.
+#
+# **By its bytes, because running it proves nothing.** Half of this binary
+# still answers `version` and `help` -- the pages those touch are all in the
+# first half -- so the unfixed script's truncated upgrade passed a check that
+# only ran it, and would have died later on whichever verb reached further.
+# The release on the shelf is `$SHARPIE`'s bytes, so that is what `bin/` must
+# hold.
+whole() {
+    if ! cmp -s "$selfbin/sharpie$EXE" "$SHARPIE"; then
+        note "bin/sharpie$EXE is not the binary that was installed: $(wc -c < "$selfbin/sharpie$EXE" | tr -d ' ') of $(wc -c < "$SHARPIE" | tr -d ' ') bytes"
+        return 1
+    fi
+    say "$selfbin/sharpie$EXE" version
+    exited 0 || return 1
+    says "sharpie " || return 1
+    return 0
+}
+
+# `install.sh`, with the shims in `$1` in front of `PATH`. Not through `say`,
+# because `PATH` can hold a space (`/c/Program Files/...`) and `env_line` is
+# split on them.
+installer() {
+    out=$(cd "$mine" && PATH="$1:$PATH" SHIM_SHELF="$shelf" \
+        SHARPIE_HOME="$work/selfhome" SHARPIE_VERSION="$version" \
+        sh "$root/install.sh" 2>&1) && status=0 || status=$?
+}
+
 # What every fault injection has to leave behind: nothing new, and everything
 # that was working still working.
 survived() {
@@ -972,7 +1095,8 @@ refuses_the_missing:a rung naming what is not installed refuses
 refuses_a_path:a rung or a verb naming a path refuses
 truncated_download:a truncated download
 digest_mismatch:a digest mismatch
-interrupted_extract:an install interrupted mid-extract"
+interrupted_extract:an install interrupted mid-extract
+self_upgrade:an upgrade of sharpie itself, cut short, leaves the one that was there"
 
 pass=0
 fail=0

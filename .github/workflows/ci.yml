@@ -217,3 +217,24 @@ jobs:
           MSYS2_ARG_CONV_EXCL: "*"
           MSYS2_ENV_CONV_EXCL: "*"
         run: SHARPIE="./sharpie${{ matrix.exe }}" ./tests/rungs.sh
+
+      # **`install.ps1`, which `rungs.sh` cannot reach.** The rungs run
+      # `install.sh` and cut its copy short part way; this is the same for the
+      # PowerShell installer, offline in the same way, with the built binary as
+      # the release. Windows PowerShell 5.1 on Windows, because that is the
+      # oldest the script promises to run on and the one a bare machine has.
+      - name: install.ps1
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests/install-ps1.ps1 -Sharpie .\sharpie.exe
+          exit $LASTEXITCODE
+
+      # And PowerShell 7 everywhere else, which is where the test can be run
+      # without a Windows machine -- so a change to it is checked here first.
+      - name: install.ps1 under PowerShell 7
+        if: runner.os != 'Windows'
+        shell: pwsh
+        run: |
+          ./tests/install-ps1.ps1 -Sharpie ./sharpie
+          exit $LASTEXITCODE
