@@ -20,6 +20,10 @@
 // expect: contents survived: 300000
 // expect: installing again is a no-op that succeeds: true
 // expect: nothing is left in tmp: true
+// expect: a toolchain with its wsharp gone is installed again: true
+// expect: so is one with its ingot gone: true
+// expect: nothing is left in tmp after a repair: true
+// expect: an archive that is not a whole toolchain is refused and published nowhere: true
 // expect: a corrupt archive fails and leaves nothing: true
 // expect: `..` in a member is refused: true
 // expect: an absolute member is refused: true
@@ -82,6 +86,30 @@ fn run() !void {
 
     // Nothing assembled is left lying about.
     print(text.concat("nothing is left in tmp: ", yes(empty(home.scratch(h)))));
+
+    // **A directory that is there is not a toolchain that is there.** With its
+    // compiler deleted, the unfixed `unpack` answered success and did nothing,
+    // and so did `install` above it -- `already`, exit 0, and a `wsharp` that
+    // could not run. Damaged is fetched again and put in place.
+    try fs.remove(path.join(at, "wsharp"));
+    const d = fault.none();
+    print(text.concat("a toolchain with its wsharp gone is installed again: ",
+        yes(install.unpack(d, h, NAME, archive) and fs.is_executable(path.join(at, "wsharp")))));
+    try fs.remove(path.join(at, "ingot"));
+    const i = fault.none();
+    print(text.concat("so is one with its ingot gone: ",
+        yes(install.unpack(i, h, NAME, archive) and fs.is_executable(path.join(at, "ingot")))));
+    // The damaged tree went aside into `tmp` and is gone from there too.
+    print(text.concat("nothing is left in tmp after a repair: ", yes(empty(home.scratch(h)))));
+
+    // And nothing is published that the next install would call damaged: an
+    // archive with neither program in it is not a toolchain, however well it
+    // unpacks.
+    const sample = try io.read_file("tests/fixtures/sample.tar.gz");
+    const p = fault.none();
+    const partial = install.unpack(p, h, "0.0.1-partial", sample);
+    print(text.concat("an archive that is not a whole toolchain is refused and published nowhere: ",
+        yes(!partial and !fs.is_dir(home.toolchain(h, "0.0.1-partial")) and empty(home.scratch(h)))));
 
     // A failed unpack must not leave a partial toolchain that `toolchain list`
     // would report and a proxy would try to run.

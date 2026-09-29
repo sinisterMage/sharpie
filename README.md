@@ -126,6 +126,10 @@ a directory:
 └── settings.toml
 ```
 
+A toolchain directory without a runnable `wsharp` and `ingot` in it is damaged,
+not installed: `install` and `update` fetch it again and put the new one in its
+place, through `tmp/` like any other install, rather than answering `already`.
+
 `SHARPIE_HOME` moves all of it. It is deliberately **not** `WSHARP_HOME`, which
 is `ingot`'s content-addressed package store and a different thing -- the split
 is `RUSTUP_HOME` and `CARGO_HOME`'s.
@@ -210,7 +214,8 @@ pin alone, a rollback (which is `sharpie default <previous>` -- there is no
 separate verb, because every toolchain an update installed is still there under
 its own name -- and which survives the next `update`), an uninstall, a rung
 naming something that is not installed refusing rather than falling through, a
-rung or a verb naming a path refusing likewise, and three fault injections: a
+rung or a verb naming a path refusing likewise, a toolchain whose programs are
+gone being installed again rather than trusted, and three fault injections: a
 truncated download, a digest mismatch, and an extraction that stops part way.
 Each of the three has to leave the toolchain that was working still working.
 

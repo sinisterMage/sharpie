@@ -134,6 +134,9 @@ stub="$mine/toolchain-stub$EXE"
 # `hold` is what goes in as `wsharp`: the stub for a version that is meant to be
 # installed and run, and a line of text for the ones that exist only to fail --
 # which keeps a fault-injection rung a few hundred bytes rather than a compiler.
+#
+# A stub is `ingot` as well, because every real release carries both and an
+# installation missing either is damaged -- which `install` now notices.
 archive() {
     version=$1
     hold=${2:-stub}
@@ -143,6 +146,7 @@ archive() {
     mkdir -p "$stage"
     if [ "$hold" = "stub" ]; then
         cp "$stub" "$stage/wsharp$EXE"
+        cp "$stub" "$stage/ingot$EXE"
     else
         printf 'not a compiler\n' > "$stage/wsharp$EXE"
     fi
@@ -442,6 +446,47 @@ rung_the_default() {
     say "$bin/wsharp$EXE" --version
     exited 0 || return 1
     says "toolchains/$(full 0.9.1)/wsharp" || return 1
+    return 0
+}
+
+# A toolchain whose programs are gone is installed again, not trusted.
+#
+# A directory being there used to be the whole test, so with `wsharp` deleted
+# from it `install` said `already` and exited 0, and the next `wsharp` through a
+# proxy failed with nothing to suggest that installing again was the fix. Now
+# `install` fetches it again and puts it in place, through the same staging
+# directory as a first install -- and without moving the default, because it is
+# still installing a toolchain rather than choosing one.
+rung_repairs_the_damaged() {
+    rm -f "$mine/home/toolchains/$(full 0.9.0)/wsharp$EXE"
+    sharpie install 0.9.0
+    exited 0 || return 1
+    says "installed	$(full 0.9.0)" || return 1
+    denies "already" || return 1
+    denies "default	" || return 1
+
+    say "$bin/wsharp$EXE" +0.9.0 --version
+    exited 0 || return 1
+    says "toolchains/$(full 0.9.0)/wsharp" || return 1
+
+    # The default, missing its other program, in the same way.
+    rm -f "$mine/home/toolchains/$(full 0.9.1)/ingot$EXE"
+    sharpie install 0.9.1
+    exited 0 || return 1
+    says "installed	$(full 0.9.1)" || return 1
+    sharpie which ingot
+    exited 0 || return 1
+    says "toolchains/$(full 0.9.1)/ingot" || return 1
+    shown "$work" "$(full 0.9.1)" "the default" || return 1
+
+    # Whole again, so the next install is the no-op it always was.
+    sharpie install 0.9.0
+    exited 0 || return 1
+    says "already	$(full 0.9.0)" || return 1
+
+    # The damaged trees went aside into `tmp/` and are gone from there too.
+    left=$(ls "$mine/home/tmp" 2>/dev/null | wc -l | tr -d ' ')
+    [ "$left" = "0" ] || { note "$left directories left under tmp/"; return 1; }
     return 0
 }
 
@@ -919,6 +964,7 @@ sharpie_toolchain:SHARPIE_TOOLCHAIN
 pin_file:a wsharp-toolchain.toml found by walking upwards
 directory_override:a directory override
 the_default:the default
+repairs_the_damaged:a damaged toolchain is installed again, not trusted
 channel_update:update follows a channel and leaves a pin alone
 rollback:rollback is \`sharpie default <previous>\`
 uninstall:uninstall

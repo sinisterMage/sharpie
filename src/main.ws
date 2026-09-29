@@ -482,7 +482,9 @@ fn install_verb(f: fault.Fault, args: []str) i64 {
 
     const triple = os.target();
     const name = home.spell(semver.render(want), triple);
-    if (fs.is_dir(home.toolchain(h, name))) {
+    // Intact, not merely there: a toolchain with its `wsharp` gone used to
+    // answer `already`, and `install.unpack` now replaces one like that.
+    if (toolchain.intact(home.toolchain(h, name))) {
         print(text.concat("already\t", name));
         if (release.is_channel(args[0])) { settings.set_channel(s, args[0]); }
         return adopt(f, h, s, name, release.is_channel(args[0]));
@@ -562,7 +564,7 @@ fn update_verb(f: fault.Fault) i64 {
 
     const triple = os.target();
     const name = home.spell(semver.render(want), triple);
-    if (fs.is_dir(home.toolchain(h, name))) {
+    if (toolchain.intact(home.toolchain(h, name))) {
         print(text.concat(text.concat("current\t", chan), text.concat("\t", name)));
     } else {
         const archive = release.download(f, want, triple, cfg) orelse return FAILED;

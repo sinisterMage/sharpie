@@ -259,6 +259,28 @@ pub fn located(h: str, s: settings.Settings, name: str, why: str) ?Choice {
     return null;
 }
 
+/// Whether `dir` holds a toolchain a proxy can become.
+///
+/// Both of the programs [`proxy.is_proxied`] names, there and runnable. Every
+/// W# release since 0.1.0 has shipped `wsharp` and `ingot` side by side, so a
+/// directory missing either is damaged rather than old -- a file deleted by
+/// hand, a disk that filled, a backup restored in part.
+///
+/// **The directory being there is not the question.** `install` used to ask
+/// that, so a toolchain with its `wsharp` gone answered `already` and exited 0,
+/// and the next `wsharp` through a proxy failed with nothing left to suggest
+/// that installing it again was the fix. `install` and `update` ask this
+/// instead, and fetch again when it says no.
+///
+/// Only the programs, not every file an archive held: those two are what a
+/// proxy `exec`s, and knowing the rest would mean keeping a manifest in step
+/// with a release workflow in another repository.
+pub fn intact(dir: str) bool {
+    const compiler = program(dir, "wsharp") orelse return false;
+    const packages = program(dir, "ingot") orelse return false;
+    return fs.is_executable(compiler) and fs.is_executable(packages);
+}
+
 /// Every installed toolchain, by directory name.
 pub fn installed(h: str) []str {
     const names = fs.read_dir(home.toolchains(h)) catch { return []str{}; };

@@ -29,9 +29,14 @@ const toolchain = @import("./toolchain.ws");
 /// ways and none of them belong in a caller's error set.
 ///
 /// Already installed is success and does nothing. A toolchain is named by its
-/// version and its triple, so a directory that is there is the one that would
+/// version and its triple, so a whole one that is there is the one that would
 /// have been written -- which is what makes `sharpie install` safe to run
 /// twice, and what a retry after a failed download depends on.
+///
+/// *Whole* is [`toolchain.intact`], not "the directory exists". One that is
+/// there and damaged is replaced by what `archive` holds, through the same
+/// staging directory as a first install, and [`replaced`] has how the old one
+/// gets out of the way.
 pub fn unpack(f: fault.Fault, h: str, name: str, archive: str) bool {
     // Every caller hands over a name it spelled from a version and a triple, so
     // this is not the check that matters -- it is the one that is still here if
@@ -39,7 +44,7 @@ pub fn unpack(f: fault.Fault, h: str, name: str, archive: str) bool {
     // posing as a name could do.
     if (!toolchain.named(f, name)) { return false; }
     const at = home.toolchain(h, name);
-    if (fs.is_dir(at)) { return true; }
+    if (toolchain.intact(at)) { return true; }
 
     const members = read(f, archive) orelse return false;
     if (array.len(members) == 0) {
@@ -52,12 +57,25 @@ pub fn unpack(f: fault.Fault, h: str, name: str, archive: str) bool {
         discard(staging);
         return false;
     }
+    // Asked of the new tree as well as the old one, so that what is published
+    // is never something the next `install` would call damaged and fetch again
+    // -- for ever, since the archive would be the same one each time.
+    if (!toolchain.intact(staging)) {
+        fault.fail(f, "the archive does not hold a runnable `wsharp` and `ingot`, so it is not a toolchain");
+        discard(staging);
+        return false;
+    }
 
     fs.mkdir_all(home.toolchains(h)) catch {
         fault.fail(f, text.concat("cannot create ", home.toolchains(h)));
         discard(staging);
         return false;
     };
+    if (io.exists(at)) {
+        if (replaced(f, h, staging, at)) { return true; }
+        discard(staging);
+        return false;
+    }
     // The one step that makes it visible, and it is atomic.
     fs.rename(staging, at) catch {
         fault.fail(f, text.concat("cannot publish the toolchain at ", at));
@@ -65,6 +83,45 @@ pub fn unpack(f: fault.Fault, h: str, name: str, archive: str) bool {
         return false;
     };
     return true;
+}
+
+/// Put the tree assembled at `staging` where a damaged toolchain is.
+///
+/// **Two renames, because one cannot do it.** `rename` will not put a
+/// directory over one that is not empty, so the damaged tree is moved aside
+/// into `tmp/` first -- where nothing looks, and where it is thrown away once
+/// the new one is in place -- and the new one takes its name. If that second
+/// rename fails, the old one is put back, so a repair that fails leaves what
+/// was there rather than nothing.
+///
+/// Between the two there is no toolchain under that name, and an interrupt
+/// there leaves it so. That is a state `install` recovers from by fetching,
+/// and the tree it replaced did not run either; what never happens is a
+/// half-written tree under `toolchains/`, because only whole ones are renamed
+/// in.
+fn replaced(f: fault.Fault, h: str, staging: str, at: str) bool {
+    const aside = scratch(f, h) orelse return false;
+    // `scratch` made it; `rename` on to an existing directory is what this
+    // needs to avoid, as in [`remove`].
+    discard(aside);
+    fs.rename(at, aside) catch {
+        fault.fail(f, text.concat("cannot move the damaged toolchain out of the way at ", at));
+        return false;
+    };
+    fs.rename(staging, at) catch {
+        put_back(aside, at);
+        fault.fail(f, text.concat("cannot publish the toolchain at ", at));
+        return false;
+    };
+    discard(aside);
+    return true;
+}
+
+/// Undo a move aside, saying nothing if that fails too -- for [`discard`]'s
+/// reason: the failure that made it necessary is the one worth reporting.
+fn put_back(aside: str, at: str) void {
+    fs.rename(aside, at) catch { return; };
+    return;
 }
 
 /// Throw away a half-built tree, saying nothing if that fails too.
