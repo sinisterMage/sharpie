@@ -15,6 +15,7 @@ const home = @import("./home.ws");
 const io = @import("std/io");
 const os = @import("std/os");
 const path = @import("std/path");
+const semver = @import("ingot/semver");
 const settings = @import("./settings.ws");
 const text = @import("std/str");
 const toml = @import("std/toml");
@@ -265,7 +266,45 @@ pub fn located(h: str, s: settings.Settings, name: str, why: str) ?Choice {
     const native = home.native(name);
     const guessed = home.toolchain(h, native);
     if (fs.is_dir(guessed)) { return Choice{ .name = native, .dir = guessed, .why = why }; }
+
+    // **A channel names the newest installed toolchain on it**, for this
+    // machine's triple and without asking the network: `stable` the newest that
+    // is not a pre-release, `latest` the newest of all. That is what `wsharp
+    // +stable`, `SHARPIE_TOOLCHAIN=latest` and a pin file's `channel = "stable"`
+    // mean -- a project saying "whichever stable this machine has" -- and it
+    // used to be refused as "`stable` is not installed", although nothing but
+    // `install` and `update` could ever have made a toolchain of that name.
+    // Which releases exist is `update`'s question; this answers from what is
+    // here, so a proxy never opens a socket.
+    if (text.eq(name, "stable") or text.eq(name, "latest")) {
+        const newest = newest_installed(h, text.eq(name, "stable")) orelse return null;
+        return Choice{ .name = newest, .dir = home.toolchain(h, newest),
+            .why = text.concat(text.concat(why, ", the newest installed "), name) };
+    }
     return null;
+}
+
+/// The newest intact toolchain installed for this machine's triple, by
+/// directory name -- ignoring pre-releases when `stable_only`. Null when there
+/// is none.
+fn newest_installed(h: str, stable_only: bool) ?str {
+    const triple = os.target();
+    var best = "";
+    var best_version = semver.parse("0.0.0") orelse return null;
+    var found = false;
+    for (installed(h)) |candidate| {
+        if (!text.eq(home.triple_of(candidate), triple)) { continue; }
+        const v = semver.parse(home.version_of(candidate)) orelse continue;
+        if (stable_only and text.len(v.pre) > 0) { continue; }
+        if (!intact(home.toolchain(h, candidate))) { continue; }
+        if (!found or semver.less(best_version, v)) {
+            best = candidate;
+            best_version = v;
+            found = true;
+        }
+    }
+    if (!found) { return null; }
+    return best;
 }
 
 /// Whether `dir` holds a toolchain a proxy can become.

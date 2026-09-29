@@ -235,7 +235,7 @@ absent_dir() {
     return 0
 }
 
-# **The assertion the criterion is about.** `sharpie show` prints
+# **The assertion every rung depends on.** `sharpie show` prints
 # `toolchain<TAB><name><TAB><why>`, and `why` is the rung of the ladder that
 # answered. Asserting the name alone would pass for a ladder that always used the
 # default, which is exactly the bug a resolution test exists to find.
@@ -557,7 +557,7 @@ rung_channel_update() {
 
 # Rollback: `sharpie default <previous>`, and no new verb for it.
 #
-# Johnny's ruling, and it is the right one: every toolchain an update installed
+# There is no `rollback` verb, on purpose: every toolchain an update installed
 # is still on disk under its own name, so going back is choosing one of them --
 # which the verb that chooses one already does.
 rung_rollback() {
@@ -946,6 +946,41 @@ rung_kept_download() {
     return 0
 }
 
+# A channel at a rung names the newest toolchain installed on it.
+#
+# `+stable` and a pin's `channel = "stable"` used to be refused as "`stable` is
+# not installed": nothing but `install` and `update` resolved a channel. A rung
+# now answers from what is installed -- `stable` the newest release, `latest`
+# the newest of all -- and says so. `uninstall` alone refuses one, because a
+# delete is never aimed by a guess.
+rung_channel_rungs() {
+    archive 0.9.12
+    archive 0.9.13-rc1
+    sharpie install 0.9.12
+    exited 0 || return 1
+    sharpie install 0.9.13-rc1
+    exited 0 || return 1
+
+    where="$work"
+    sharpie +stable show
+    attributed "$(full 0.9.12)" "the newest installed stable" || return 1
+    where="$work"
+    sharpie +latest show
+    attributed "$(full 0.9.13-rc1)" "the newest installed latest" || return 1
+
+    sharpie uninstall stable
+    exited 2 || return 1
+    says "is a channel" || return 1
+
+    sharpie uninstall 0.9.13-rc1
+    exited 0 || return 1
+    sharpie uninstall 0.9.12
+    exited 0 || return 1
+    forget 0.9.12
+    forget 0.9.13-rc1
+    return 0
+}
+
 # Fault injection three: an install that stops part way through the extraction.
 #
 # **Injected as an archive that cannot be written out, not as a signal.** A
@@ -1168,6 +1203,7 @@ truncated_download:a truncated download
 digest_mismatch:a digest mismatch
 changed_release:a published release that changes is refused
 kept_download:a retry takes the archive it already has
+channel_rungs:a channel at a rung names the newest installed on it
 interrupted_extract:an install interrupted mid-extract
 self_upgrade:an upgrade of sharpie itself, cut short, leaves the one that was there"
 

@@ -655,6 +655,14 @@ fn uninstall_verb(f: fault.Fault, args: []str) i64 {
     // `/any/dir`: saying "not a toolchain name" here is what makes the refusal
     // read as one rather than as "not installed", which invites a retry.
     if (!toolchain.named(f, args[0])) { return FAILED; }
+    // A channel names whichever installed toolchain is newest on it, which is
+    // the right answer for running something and the wrong one for deleting
+    // it: a recursive delete is never aimed by a guess.
+    if (release.is_channel(args[0])) {
+        fault.fail(f, text.concat(text.concat("`", args[0]),
+            "` is a channel; `uninstall` takes a toolchain's version, and `sharpie toolchain list` says which are installed"));
+        return FAILED;
+    }
     const h = opened(f) orelse return FAILED;
     const s = read_settings(f, h) orelse return FAILED;
     const found = toolchain.located(h, s, args[0], "asked for") orelse {
