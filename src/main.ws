@@ -188,6 +188,7 @@ fn set_default(f: fault.Fault, args: []str) i64 {
         fault.fail(f, "`default` takes one toolchain, such as `sharpie default 0.1.0`");
         return FAILED;
     }
+    if (!toolchain.named(f, args[0])) { return FAILED; }
     const h = opened(f) orelse return FAILED;
     const s = read_settings(f, h) orelse return FAILED;
 
@@ -255,6 +256,10 @@ fn toolchain_link(f: fault.Fault, args: []str) i64 {
         fault.fail(f, "`toolchain link` takes a name and a directory");
         return FAILED;
     }
+    // The *name* is checked and the directory is not: a link is exactly the one
+    // place a toolchain is allowed to be a path, and it is the path that says
+    // so -- never the name, which is what a pin file gets to write.
+    if (!toolchain.named(f, args[0])) { return FAILED; }
     const h = opened(f) orelse return FAILED;
     const s = read_settings(f, h) orelse return FAILED;
     const dir = args[1];
@@ -450,6 +455,9 @@ fn install_verb(f: fault.Fault, args: []str) i64 {
         fault.fail(f, "`install` takes one version or channel, such as `sharpie install stable`");
         return FAILED;
     }
+    // Before anything is asked of the network: no release can match a path, and
+    // saying so costs nothing.
+    if (!toolchain.named(f, args[0])) { return FAILED; }
     const h = opened(f) orelse return FAILED;
     const s = read_settings(f, h) orelse return FAILED;
 
@@ -568,6 +576,11 @@ fn uninstall_verb(f: fault.Fault, args: []str) i64 {
         fault.fail(f, "`uninstall` takes one toolchain");
         return FAILED;
     }
+    // **First, and not only because `located` would refuse it too.** This verb
+    // ends in a recursive delete, and `uninstall /any/dir` used to delete
+    // `/any/dir`: saying "not a toolchain name" here is what makes the refusal
+    // read as one rather than as "not installed", which invites a retry.
+    if (!toolchain.named(f, args[0])) { return FAILED; }
     const h = opened(f) orelse return FAILED;
     const s = read_settings(f, h) orelse return FAILED;
     const found = toolchain.located(h, s, args[0], "asked for") orelse {
@@ -626,6 +639,7 @@ fn override_verb(f: fault.Fault, args: []str) i64 {
         }
         var dir = cwd;
         if (array.len(rest) == 2) { dir = rest[1]; }
+        if (!toolchain.named(f, rest[0])) { return FAILED; }
         const found = toolchain.located(h, s, rest[0], "asked for") orelse {
             fault.fail(f, text.concat(text.concat("`", rest[0]), "` is not installed"));
             return FAILED;

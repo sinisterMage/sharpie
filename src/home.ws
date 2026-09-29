@@ -66,6 +66,9 @@ pub fn bin(h: str) str { return path.join(h, "bin"); }
 pub fn toolchains(h: str) str { return path.join(h, "toolchains"); }
 
 /// Where a named toolchain lives, whether or not it is there.
+///
+/// Only for a name [`is_name`] accepts. This joins what it is given, and a
+/// `name` that is a path is answered with somewhere outside `toolchains/`.
 pub fn toolchain(h: str, name: str) str { return path.join(toolchains(h), name); }
 
 /// Downloaded archives, kept after unpacking.
@@ -91,6 +94,54 @@ pub fn settings(h: str) str { return path.join(h, "settings.toml"); }
 // ---------------------------------------------------------------------------
 // What a toolchain is called
 // ---------------------------------------------------------------------------
+
+/// Whether `name` can name a toolchain.
+///
+/// **A name becomes one component of a path**, `toolchains/<name>`, and it
+/// arrives from places sharpie does not control: a `+` argument, an environment
+/// variable, a hand-edited `settings.toml` -- and a `wsharp-toolchain.toml` in a
+/// repository somebody has just cloned, which is the sharp one. `path.join`
+/// answers an absolute second argument with itself and `..` climbs out of
+/// `toolchains/`, so a name that was a path made a proxy `exec` whatever that
+/// path held, and made `uninstall` delete it. So what a name *is* is written
+/// down here, and anything else is refused rather than tidied up.
+///
+/// Three things are names, and they are every way one is made:
+///
+///   - a version, `0.2.3` or `0.2.0-rc1+build.5`, bare or with its triple --
+///     which is what `install` writes and `toolchain list` prints;
+///   - a channel, `stable` or `latest`;
+///   - whatever was given to `sharpie toolchain link`.
+///
+/// All three are ASCII letters and digits with `.`, `-`, `+` and `_` among them:
+/// semver's own alphabet, and the underscore somebody naming a link reaches for.
+/// So a name starts with a letter or a digit, which rules out `.`, `..`, a hidden
+/// directory and anything that reads as a flag; holds nothing else, which rules
+/// out both separators, a drive's `:`, whitespace and control characters; and
+/// never holds `..`, which no version can. An empty string is not a name -- and
+/// that one mattered on its own, because `path.join(toolchains, "")` is
+/// `toolchains` itself, so `sharpie uninstall ""` removed every toolchain there
+/// was.
+///
+/// An allow-list rather than a list of what to refuse, because the list of what
+/// to refuse is the one that forgets `\` on the platform nobody ran it on.
+pub fn is_name(name: str) bool {
+    const n = text.len(name);
+    if (n == 0) { return false; }
+    if (!alphanumeric(text.byte_at(name, 0))) { return false; }
+    var i = 0;
+    while (i < n) : (i += 1) {
+        const b = text.byte_at(name, i);
+        // `.` `-` `+` `_`
+        const joiner = b == 46 or b == 45 or b == 43 or b == 95;
+        if (!alphanumeric(b) and !joiner) { return false; }
+    }
+    return text.find(name, "..") < 0;
+}
+
+fn alphanumeric(b: i64) bool {
+    return (b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122);
+}
 
 /// A toolchain's directory name: its version and the triple it was built for.
 ///

@@ -93,6 +93,17 @@ A rung naming a toolchain that is not installed **stops there** rather than
 falling through to the next one: quietly running a different compiler than the
 one that was asked for, and saying nothing about it, is worse than refusing.
 
+So does a rung naming something that is not a toolchain name at all. A name is
+a version (`0.2.3`, `0.2.0-rc1`, bare or with its triple), a channel (`stable`,
+`latest`), or whatever was given to `sharpie toolchain link`: ASCII letters and
+digits with `.`, `-`, `+` and `_` among them, starting with a letter or a digit.
+It is **never a path** -- no `/` or `\`, no `..`, no drive letter, nothing
+hidden, nothing empty. A `wsharp-toolchain.toml` is a file in whatever
+repository was just cloned, and a name that could climb out of
+`~/.sharpie/toolchains/` would let that file decide which program `wsharp`
+runs. Every verb that takes a toolchain -- `default`, `uninstall`, `override
+set`, `toolchain link` and `install` -- refuses one in the same words.
+
 ## What a toolchain is
 
 Not one binary. `wsharp` needs something to link against, so an installation is
@@ -190,9 +201,10 @@ fresh install, an upgrade, each of the five rungs above with the attribution
 pin alone, a rollback (which is `sharpie default <previous>` -- there is no
 separate verb, because every toolchain an update installed is still there under
 its own name), an uninstall, a rung naming something that is not installed
-refusing rather than falling through, and three fault injections: a truncated
-download, a digest mismatch, and an extraction that stops part way. Each of the
-three has to leave the toolchain that was working still working.
+refusing rather than falling through, a rung or a verb naming a path refusing
+likewise, and three fault injections: a truncated download, a digest mismatch,
+and an extraction that stops part way. Each of the three has to leave the
+toolchain that was working still working.
 
 It needs no network and no peer. The releases are a directory it builds for
 itself under `SHARPIE_RELEASE_DIR`, holding archives made from a stub compiled by

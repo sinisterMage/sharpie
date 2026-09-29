@@ -30,6 +30,29 @@
 // expect: a bare version is all version: 0.1.1
 // expect: a bare version has no triple: true
 // expect: a channel name is left alone: stable
+// expect: names: stable latest 0.2.3 0.2.0-rc1 1.0.0+build.5 0.2.3-x86_64-unknown-linux-gnu 0.2.0-rc1-aarch64-apple-darwin 1.0.0-x86_64-pc-windows-msvc dev my_checkout W2
+// expect: refused: empty
+// expect: refused: .
+// expect: refused: ..
+// expect: refused: .tools, which is hidden
+// expect: refused: ../x
+// expect: refused: ..\x
+// expect: refused: a/b
+// expect: refused: a\b
+// expect: refused: /abs
+// expect: refused: \abs
+// expect: refused: C:
+// expect: refused: C:/x
+// expect: refused: c:x
+// expect: refused: 1..2
+// expect: refused: -rf
+// expect: refused: +stable
+// expect: refused: a space
+// expect: refused: a newline
+// expect: refused: a tab
+// expect: refused: DEL
+// expect: refused: a NUL
+// expect: refused: non-ASCII
 const home = @import("../src/home.ws");
 const os = @import("std/os");
 const text = @import("std/str");
@@ -73,6 +96,52 @@ fn run() !void {
     print(text.concat("a bare version has no triple: ",
         yes(text.len(home.triple_of("0.1.1")) == 0)));
     show("a channel name is left alone", home.version_of("stable"));
+
+    // What a toolchain can be called. Every spelling `install` writes and a
+    // user types is in the first list, so tightening the rule cannot quietly
+    // refuse a real toolchain; the second list is every way a name could be a
+    // path, or could be printed as something other than itself.
+    const good = []str{ "stable", "latest", "0.2.3", "0.2.0-rc1", "1.0.0+build.5",
+        "0.2.3-x86_64-unknown-linux-gnu", "0.2.0-rc1-aarch64-apple-darwin",
+        "1.0.0-x86_64-pc-windows-msvc", "dev", "my_checkout", "W2" };
+    var named = "";
+    var i = 0;
+    while (i < 11) : (i += 1) {
+        if (home.is_name(good[i])) { named = text.concat(named, text.concat(" ", good[i])); }
+    }
+    print(text.concat("names:", named));
+
+    refused("empty", "");
+    refused(".", ".");
+    refused("..", "..");
+    refused(".tools, which is hidden", ".tools");
+    refused("../x", "../x");
+    refused("..\\x", "..\\x");
+    refused("a/b", "a/b");
+    refused("a\\b", "a\\b");
+    refused("/abs", "/abs");
+    refused("\\abs", "\\abs");
+    refused("C:", "C:");
+    refused("C:/x", "C:/x");
+    refused("c:x", "c:x");
+    refused("1..2", "1..2");
+    refused("-rf", "-rf");
+    refused("+stable", "+stable");
+    refused("a space", "0.2.3 x");
+    refused("a newline", "0.2.3\n");
+    refused("a tab", "0.2.3\tx");
+    refused("DEL", text.concat("0.2.3", text.from_byte(127)));
+    refused("a NUL", "0.2.3\0");
+    refused("non-ASCII", "0.2.3-é");
+    return;
+}
+
+fn refused(label: str, name: str) void {
+    if (home.is_name(name)) {
+        print(text.concat("ACCEPTED: ", label));
+        return;
+    }
+    print(text.concat("refused: ", label));
     return;
 }
 

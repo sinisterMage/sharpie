@@ -611,6 +611,125 @@ rung_refuses_the_missing() {
     return 0
 }
 
+# A rung naming a *path* refuses too, and so does every verb that takes a
+# toolchain.
+#
+# The ladder is where the danger comes from: a `wsharp-toolchain.toml` in a
+# repository somebody has just cloned is a file a stranger wrote, and a name used
+# to be joined on to `toolchains/` as it came -- so `../../trap`, or an absolute
+# path, was a toolchain wherever it pointed, `show` called it an ordinary pin, and
+# the proxy ran whatever was there. The verbs are where it cost data: `uninstall`
+# renamed the path into `tmp/` and deleted it, and `uninstall ""` deleted
+# `toolchains/` itself.
+#
+# `trap` holds a working stub, so each refusal below had something runnable on
+# the far side of it; and the default is installed, so falling through would have
+# found something too.
+rung_refuses_a_path() {
+    mkdir -p "$mine/trap"
+    cp "$stub" "$mine/trap/wsharp$EXE"
+    # Relative to `$SHARPIE_HOME/toolchains`, which is what a name is joined on to.
+    up="../../trap"
+
+    for rung in argument environment pin absolute override default; do
+        named=$up
+        case $rung in
+            argument)
+                sharpie "+$up" show
+                why="the \`+\` argument" ;;
+            environment)
+                env_line="SHARPIE_TOOLCHAIN=$up"
+                sharpie show
+                why="SHARPIE_TOOLCHAIN" ;;
+            pin)
+                mkdir -p "$mine/cloned"
+                printf 'toolchain = "%s"\n' "$up" > "$mine/cloned/wsharp-toolchain.toml"
+                where="$work/cloned"
+                sharpie show
+                why="wsharp-toolchain.toml" ;;
+            absolute)
+                named="$work/trap"
+                printf 'toolchain = "%s"\n' "$named" > "$mine/cloned/wsharp-toolchain.toml"
+                where="$work/cloned"
+                sharpie show
+                why="wsharp-toolchain.toml" ;;
+            override)
+                mkdir -p "$mine/spot3"
+                # By hand, because `override set` refuses it -- which is below.
+                printf '\n[[override]]\npath = "%s"\ntoolchain = "%s"\n' "$work/spot3" "$up" \
+                    >> "$mine/home/settings.toml"
+                where="$work/spot3"
+                sharpie show
+                why="a directory override" ;;
+            default)
+                # Rewritten rather than appended, because a second `default`
+                # key is a TOML error and would test the parser instead.
+                cp "$mine/home/settings.toml" "$mine/settings.keep"
+                sed "s|^default = .*|default = \"$up\"|" "$mine/settings.keep" \
+                    > "$mine/home/settings.toml"
+                sharpie show
+                cp "$mine/settings.keep" "$mine/home/settings.toml"
+                why="the default" ;;
+        esac
+        exited 1 || return 1
+        says "\`$named\` is not a toolchain name ($why)" || return 1
+        # `directory` is printed only for something chosen.
+        denies "directory	" || return 1
+    done
+
+    # The attack itself: a proxied command run inside the cloned tree.
+    printf 'toolchain = "%s"\n' "$up" > "$mine/cloned/wsharp-toolchain.toml"
+    where="$work/cloned"
+    say "$bin/wsharp$EXE" build x.ws
+    if [ "$status" -eq 0 ]; then
+        note "the proxy ran something"
+        return 1
+    fi
+    says "is not a toolchain name (wsharp-toolchain.toml)" || return 1
+    denies "trap/wsharp" || return 1
+
+    # Every verb that takes a toolchain refuses one that is a path, and says so
+    # in the same words.
+    sharpie default "$up"
+    exited 2 || return 1
+    says "\`$up\` is not a toolchain name" || return 1
+    sharpie default "$work/trap"
+    exited 2 || return 1
+    says "is not a toolchain name" || return 1
+    shown "$work" "$(full 0.9.0)" "the default" || return 1
+
+    where="$work/spot3"
+    sharpie override set "$up"
+    exited 2 || return 1
+    says "is not a toolchain name" || return 1
+
+    sharpie toolchain link "$up" "$work/trap"
+    exited 2 || return 1
+    says "is not a toolchain name" || return 1
+
+    sharpie install "$up"
+    exited 2 || return 1
+    says "is not a toolchain name" || return 1
+
+    # And the one that deletes: nothing it was pointed at is gone afterwards.
+    sharpie uninstall "$up"
+    exited 2 || return 1
+    says "is not a toolchain name" || return 1
+    sharpie uninstall "$work/trap"
+    exited 2 || return 1
+    says "is not a toolchain name" || return 1
+    [ -x "$mine/trap/wsharp$EXE" ] || { note "uninstall deleted $mine/trap"; return 1; }
+    sharpie uninstall ""
+    exited 2 || return 1
+    says "is not a toolchain name" || return 1
+    [ -d "$mine/home/toolchains/$(full 0.9.0)" ] || { note "uninstall \"\" deleted toolchains/"; return 1; }
+
+    sharpie override unset "$work/spot3"
+    exited 0 || return 1
+    rm -rf "$mine/trap" "$mine/cloned" "$mine/settings.keep"
+    return 0
+}
+
 # Fault injection one: a download that arrives short.
 #
 # On the wire this is a connection that closed early. Here the archive in the
@@ -767,6 +886,7 @@ channel_update:update follows a channel and leaves a pin alone
 rollback:rollback is \`sharpie default <previous>\`
 uninstall:uninstall
 refuses_the_missing:a rung naming what is not installed refuses
+refuses_a_path:a rung or a verb naming a path refuses
 truncated_download:a truncated download
 digest_mismatch:a digest mismatch
 interrupted_extract:an install interrupted mid-extract"

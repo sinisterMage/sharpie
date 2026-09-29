@@ -9,6 +9,7 @@
 // Nothing here opens a socket or unpacks anything. It answers *which* and
 // *where*, so that installing and proxying can each be about one thing.
 const array = @import("std/array");
+const fault = @import("ingot/fault");
 const fs = @import("std/fs");
 const home = @import("./home.ws");
 const io = @import("std/io");
@@ -52,6 +53,11 @@ pub const Ask = struct { name: str, why: str };
 /// caller strips it -- this only reports that it is there, because a proxy has
 /// to remove it before handing the rest on and only it knows the shape of what
 /// it is handing.
+///
+/// What a rung names is answered whether or not it is a name at all. The first
+/// rung that says anything is the one that decides, so a pin file naming a path
+/// is not stepped over on the way to the default: [`located`] refuses it, and
+/// [`why_nothing`] says which rung it was.
 pub fn asked(s: settings.Settings, args: []str, cwd: str) ?Ask {
     if (plus_toolchain(args)) |named| {
         return Ask{ .name = named, .why = "the `+` argument" };
@@ -91,8 +97,59 @@ pub fn why_nothing(s: settings.Settings, args: []str, cwd: str) str {
     const a = asked(s, args, cwd) orelse {
         return "nothing is chosen; `sharpie install stable` gets a toolchain and makes it the default";
     };
+    // Before "not installed", which would be true and would send the reader to
+    // `toolchain list` looking for a directory that must never be there.
+    if (!home.is_name(a.name)) {
+        return text.concat(text.concat(text.concat(quoted(a.name), " is not a toolchain name ("),
+            a.why), text.concat("); ", WHAT_A_NAME_IS));
+    }
     return text.concat(text.concat(text.concat("`", a.name), "` is not installed ("),
         text.concat(a.why, "); `sharpie toolchain list` says what is"));
+}
+
+/// The second half of every refusal of a name, so they all say the same thing.
+pub const WHAT_A_NAME_IS = "a toolchain is named by a version, a channel or `sharpie toolchain link`, and never by a path";
+
+/// Whether `name` can name a toolchain; when it cannot, the reason is in `f`.
+///
+/// Asked first by every verb that takes a toolchain on its command line --
+/// `default`, `uninstall`, `override set`, `toolchain link` and `install` --
+/// and again by the two steps that write and delete a tree, so all of them
+/// refuse a path in the same words. The ladder says the same through
+/// [`why_nothing`], with the rung added.
+pub fn named(f: fault.Fault, name: str) bool {
+    if (home.is_name(name)) { return true; }
+    fault.fail(f, not_a_name(name));
+    return false;
+}
+
+/// Why a verb given `name` will not use it.
+pub fn not_a_name(name: str) str {
+    return text.concat(text.concat(quoted(name), " is not a toolchain name; "), WHAT_A_NAME_IS);
+}
+
+/// `name` in backticks, with every control character spelled `\xNN`.
+///
+/// A name that has just been refused came from somewhere untrusted, and `show`
+/// prints the refusal as a field of a tab-separated record. A pin file that
+/// said `toolchain = "x\ndirectory\t/somewhere"` would otherwise write a second
+/// record of its own choosing into the answer to "what would run here", and a
+/// terminal escape in one would be read by the terminal rather than by the user.
+fn quoted(name: str) str {
+    const digits = "0123456789abcdef";
+    var out = "`";
+    var i = 0;
+    while (i < text.len(name)) : (i += 1) {
+        const b = text.byte_at(name, i);
+        if (b < 32 or b == 127) {
+            out = text.concat(out, "\\x");
+            out = text.concat(out, text.from_byte(text.byte_at(digits, (b >> 4) & 15)));
+            out = text.concat(out, text.from_byte(text.byte_at(digits, b & 15)));
+        } else {
+            out = text.concat(out, text.from_byte(b));
+        }
+    }
+    return text.concat(out, "`");
 }
 
 /// `+name` as the first argument, or null.
@@ -181,7 +238,15 @@ pub fn pinned_in(file: str) ?str {
 /// module does not ask the network. Whatever installs a channel writes the
 /// version it chose into the settings, so by the time anything is run the
 /// answer is a version.
+///
+/// Null, too, for anything that is not a name ([`home.is_name`]), and before
+/// any of the three lookups: every rung of the ladder and every verb that takes
+/// a toolchain comes through here, so this is the one place a path cannot get
+/// past. A link is not an exception. `toolchain link` refuses to make one under
+/// such a name, and one written into `settings.toml` by hand is still not
+/// something a pin file in a stranger's repository should be able to reach.
 pub fn located(h: str, s: settings.Settings, name: str, why: str) ?Choice {
+    if (!home.is_name(name)) { return null; }
     if (settings.link_dir(s, name)) |dir| {
         return Choice{ .name = name, .dir = dir, .why = text.concat(why, ", linked") };
     }

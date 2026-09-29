@@ -20,6 +20,7 @@ const io = @import("std/io");
 const path = @import("std/path");
 const targz = @import("./targz.ws");
 const text = @import("std/str");
+const toolchain = @import("./toolchain.ws");
 
 /// Unpack `archive` and publish it as the toolchain called `name`.
 ///
@@ -32,6 +33,11 @@ const text = @import("std/str");
 /// have been written -- which is what makes `sharpie install` safe to run
 /// twice, and what a retry after a failed download depends on.
 pub fn unpack(f: fault.Fault, h: str, name: str, archive: str) bool {
+    // Every caller hands over a name it spelled from a version and a triple, so
+    // this is not the check that matters -- it is the one that is still here if
+    // a caller stops doing that. Writing a tree is the other half of what a path
+    // posing as a name could do.
+    if (!toolchain.named(f, name)) { return false; }
     const at = home.toolchain(h, name);
     if (fs.is_dir(at)) { return true; }
 
@@ -172,7 +178,15 @@ pub fn safe(name: str) bool {
 /// The directory is renamed out of the way first and then removed, so a
 /// half-finished removal cannot leave something `toolchain list` still reports
 /// -- the same trick as installing, in the other direction.
+///
+/// **Only ever something under `toolchains/`.** `uninstall /any/dir` used to
+/// reach here with the directory as the name, and `path.join` answers an
+/// absolute path with itself -- so it was renamed into `tmp/` and deleted, and
+/// `uninstall ""` took `toolchains/` itself. The verb refuses such a name first;
+/// this refuses it again, because a recursive delete is the one step whose
+/// mistakes cannot be taken back.
 pub fn remove(f: fault.Fault, h: str, name: str) bool {
+    if (!toolchain.named(f, name)) { return false; }
     const at = home.toolchain(h, name);
     if (!fs.is_dir(at)) {
         fault.fail(f, text.concat(text.concat("`", name), "` is not installed"));
