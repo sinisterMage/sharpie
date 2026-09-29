@@ -30,7 +30,7 @@
 // expect: a bare version is all version: 0.1.1
 // expect: a bare version has no triple: true
 // expect: a channel name is left alone: stable
-// expect: names: stable latest 0.2.3 0.2.0-rc1 1.0.0+build.5 0.2.3-x86_64-unknown-linux-gnu 0.2.0-rc1-aarch64-apple-darwin 1.0.0-x86_64-pc-windows-msvc dev my_checkout W2
+// expect: names: stable latest 0.2.3 0.2.0-rc1 1.0.0+build.5 0.2.3-x86_64-unknown-linux-gnu 0.2.0-rc1-aarch64-apple-darwin 1.0.0-x86_64-pc-windows-msvc dev my_checkout W2 com0 console nuller
 // expect: refused: empty
 // expect: refused: .
 // expect: refused: ..
@@ -53,6 +53,12 @@
 // expect: refused: DEL
 // expect: refused: a NUL
 // expect: refused: non-ASCII
+// expect: refused: a trailing dot
+// expect: refused: nul
+// expect: refused: CON
+// expect: refused: Aux with a suffix
+// expect: refused: com1
+// expect: refused: LPT9
 const home = @import("../src/home.ws");
 const os = @import("std/os");
 const text = @import("std/str");
@@ -103,10 +109,10 @@ fn run() !void {
     // path, or could be printed as something other than itself.
     const good = []str{ "stable", "latest", "0.2.3", "0.2.0-rc1", "1.0.0+build.5",
         "0.2.3-x86_64-unknown-linux-gnu", "0.2.0-rc1-aarch64-apple-darwin",
-        "1.0.0-x86_64-pc-windows-msvc", "dev", "my_checkout", "W2" };
+        "1.0.0-x86_64-pc-windows-msvc", "dev", "my_checkout", "W2", "com0", "console", "nuller" };
     var named = "";
     var i = 0;
-    while (i < 11) : (i += 1) {
+    while (i < 14) : (i += 1) {
         if (home.is_name(good[i])) { named = text.concat(named, text.concat(" ", good[i])); }
     }
     print(text.concat("names:", named));
@@ -133,6 +139,13 @@ fn run() !void {
     refused("DEL", text.concat("0.2.3", text.from_byte(127)));
     refused("a NUL", "0.2.3\0");
     refused("non-ASCII", "0.2.3-é");
+    // Windows: a trailing `.` is stripped, and a device name is not a file.
+    refused("a trailing dot", "1.0.");
+    refused("nul", "nul");
+    refused("CON", "CON");
+    refused("Aux with a suffix", "Aux.toolchain");
+    refused("com1", "com1");
+    refused("LPT9", "LPT9");
     return;
 }
 

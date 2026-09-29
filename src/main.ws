@@ -17,6 +17,7 @@ const fs = @import("std/fs");
 const home = @import("./home.ws");
 const install = @import("./install.ws");
 const io = @import("std/io");
+const ledger = @import("./ledger.ws");
 const os = @import("std/os");
 const path = @import("std/path");
 const proxy = @import("./proxy.ws");
@@ -490,10 +491,7 @@ fn install_verb(f: fault.Fault, args: []str) i64 {
         return adopt(f, h, s, name, release.is_channel(args[0]));
     }
 
-    // The archive is written down before it is unpacked, so a failure part way
-    // through leaves something a retry can use rather than a hole.
-    const archive = release.download(f, want, triple, cfg) orelse return FAILED;
-    if (!keep(f, h, release.archive_name(want, triple), archive)) { return FAILED; }
+    const archive = obtained(f, h, want, triple, cfg) orelse return FAILED;
     if (!install.unpack(f, h, name, archive)) { return FAILED; }
 
     print(text.concat("installed\t", name));
@@ -526,6 +524,66 @@ fn adopt(f: fault.Fault, h: str, s: settings.Settings, name: str, following: boo
     };
     if (chose) { print(text.concat("default\t", name)); }
     return OK;
+}
+
+/// The archive for `v` on `triple`: published, unchanged, and fetched at most
+/// once.
+///
+/// Three checks, in the order that costs least:
+///
+///   - **The published digest against the ledger.** A release that has
+///     changed since this home first installed it is refused before a byte of
+///     the archive is fetched. See `ledger.ws` for why that can happen at all.
+///   - **A kept download against the published digest.** `downloads/` holds
+///     every archive this home has fetched, and one that still hashes to what
+///     is published *is* what is published: an interrupted unpack, a repair of
+///     a damaged toolchain and an install after an uninstall all take it from
+///     there. One that does not -- half-written, or from before a change the
+///     ledger has already refused -- is fetched again.
+///   - **A fetched archive against the published digest**, in
+///     [`release.fetch_archive`], as before.
+///
+/// The archive is written down before it is unpacked, so a failure part way
+/// through leaves something a retry can use rather than a hole.
+fn obtained(f: fault.Fault, h: str, v: semver.Version, triple: str, cfg: tls.Config) ?str {
+    const name = release.archive_name(v, triple);
+    const want = release.published_digest(f, v, triple, cfg) orelse return null;
+    if (ledger.remembered(h, name)) |first| {
+        if (!text.eq(first, want)) {
+            var why = text.concat(name, " has changed since this home first installed it: it hashed to ");
+            why = text.concat(why, first);
+            why = text.concat(why, " then and is published as ");
+            why = text.concat(why, want);
+            why = text.concat(why, " now. A published release never changes, so this is refused; if it was rebuilt on purpose, remove its line from ");
+            fault.fail(f, text.concat(why, home.ledger(h)));
+            return null;
+        }
+    }
+    if (kept(h, name, want)) |archive| {
+        if (!noted(f, h, name, want)) { return null; }
+        return archive;
+    }
+    const archive = release.fetch_archive(f, v, triple, cfg, want) orelse return null;
+    if (!keep(f, h, name, archive)) { return null; }
+    if (!noted(f, h, name, want)) { return null; }
+    return archive;
+}
+
+/// The kept download of `name`, if it is there and hashes to `want`.
+fn kept(h: str, name: str, want: str) ?str {
+    const archive = io.read_file(path.join(home.downloads(h), name)) catch return null;
+    return release.verified(archive, want) catch return null;
+}
+
+/// Write the digest into the ledger. A failure stops the install: the ledger
+/// is the only record that a later install would be held to, so going on
+/// without it would quietly give that up.
+fn noted(f: fault.Fault, h: str, name: str, want: str) bool {
+    ledger.remember(h, name, want) catch {
+        fault.fail(f, text.concat("cannot write ", home.ledger(h)));
+        return false;
+    };
+    return true;
 }
 
 /// Keep the downloaded archive, so a failed unpack need not fetch it again.
@@ -567,8 +625,7 @@ fn update_verb(f: fault.Fault) i64 {
     if (toolchain.intact(home.toolchain(h, name))) {
         print(text.concat(text.concat("current\t", chan), text.concat("\t", name)));
     } else {
-        const archive = release.download(f, want, triple, cfg) orelse return FAILED;
-        if (!keep(f, h, release.archive_name(want, triple), archive)) { return FAILED; }
+        const archive = obtained(f, h, want, triple, cfg) orelse return FAILED;
         if (!install.unpack(f, h, name, archive)) { return FAILED; }
         print(text.concat("installed\t", name));
     }

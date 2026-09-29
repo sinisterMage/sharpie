@@ -28,7 +28,10 @@
 // expect: an absolute pin chooses nothing: true
 // expect: and says it is not a name: true
 // expect: an empty pin chooses nothing: true
-// expect: the empty pin says: `` is not a toolchain name (wsharp-toolchain.toml); a toolchain is named by a version, a channel or `sharpie toolchain link`, and never by a path
+// expect: the empty pin says: the wsharp-toolchain.toml names no toolchain: it needs `toolchain = "<version>"`, or a `[toolchain]` table with a `channel`
+// expect: a malformed pin chooses nothing: true
+// expect: and names its file: true
+// expect: a pin without `toolchain` chooses nothing: true
 // expect: an override naming a path chooses nothing: true
 // expect: the override says: `../escaped` is not a toolchain name (a directory override); a toolchain is named by a version, a channel or `sharpie toolchain link`, and never by a path
 // expect: a default naming a path chooses nothing: true
@@ -111,6 +114,17 @@ fn run() !void {
     try io.write_file(pin, "toolchain = \"\"\n");
     print(text.concat("an empty pin chooses nothing: ", yes(unchosen(h, s, []str{}, repo))));
     print(text.concat("the empty pin says: ", toolchain.why_nothing(s, []str{}, repo)));
+
+    // A pin that is not TOML at all, and one that is and names nothing, decide
+    // the ladder too. The default is installed, so one that fell through --
+    // which both did -- would have answered with it.
+    try io.write_file(pin, "toolchain = 0.2.3 is not a string\n");
+    print(text.concat("a malformed pin chooses nothing: ", yes(unchosen(h, s, []str{}, repo))));
+    const said = toolchain.why_nothing(s, []str{}, repo);
+    print(text.concat("and names its file: ",
+        yes(text.find(said, "names no toolchain") >= 0 and text.find(said, pin) >= 0)));
+    try io.write_file(pin, "channel = \"stable\"\n");
+    print(text.concat("a pin without `toolchain` chooses nothing: ", yes(unchosen(h, s, []str{}, repo))));
 
     // Rung four, in a directory with no pin above it.
     const spot = path.join(h, "spot");

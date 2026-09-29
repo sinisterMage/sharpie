@@ -137,9 +137,14 @@ stub="$mine/toolchain-stub$EXE"
 #
 # A stub is `ingot` as well, because every real release carries both and an
 # installation missing either is damaged -- which `install` now notices.
+#
+# `note`, when given, is written beside them as `NOTE`: two archives of one
+# version that must differ in their bytes -- a release rebuilt behind a
+# published digest -- differ by that and not by the second a timestamp fell in.
 archive() {
     version=$1
     hold=${2:-stub}
+    extra=${3:-}
     name="wsharp-$version-$triple"
     stage="$mine/stage/$name"
     rm -rf "$mine/stage"
@@ -149,6 +154,9 @@ archive() {
         cp "$stub" "$stage/ingot$EXE"
     else
         printf 'not a compiler\n' > "$stage/wsharp$EXE"
+    fi
+    if [ -n "$extra" ]; then
+        printf '%s\n' "$extra" > "$stage/NOTE"
     fi
     ( cd "$mine/stage" && tar -czf "$releases/$name.tar.gz" "$name" )
     sha256 "$releases/$name.tar.gz" > "$releases/$name.tar.gz.sha256"
@@ -875,6 +883,69 @@ rung_digest_mismatch() {
     return 0
 }
 
+# A published release that changes is refused, not installed.
+#
+# The digest beside an archive only proves the archive arrived whole: whoever
+# can replace one can replace both. W#'s release workflow could once be re-run
+# for a tag that was already public, and a toolchain removed and installed again
+# would then have been a different build under the same version. So the digest
+# first seen is kept in the home's ledger, and this rung publishes 0.9.8, installs
+# it, removes it, publishes *different* bytes as 0.9.8 with a digest that matches
+# them -- a perfectly consistent release, just not the same one -- and asks again.
+rung_changed_release() {
+    archive 0.9.8 stub "the first build"
+    sharpie install 0.9.8
+    exited 0 || return 1
+    sharpie uninstall 0.9.8
+    exited 0 || return 1
+
+    archive 0.9.8 stub "a rebuild behind the same tag"
+    sharpie install 0.9.8
+    exited 2 || return 1
+    says "has changed since this home first installed it" || return 1
+    absent_dir "$mine/home/toolchains/$(full 0.9.8)" || return 1
+
+    forget 0.9.8
+    return 0
+}
+
+# A retry takes the archive it already has.
+#
+# `downloads/` keeps every archive this home fetched, and one that still hashes
+# to the published digest is the published archive -- so an install after an
+# uninstall, a repair and a retry after a failed unpack need not fetch it again.
+# Proved by breaking the published copy after the first install: the sidecar
+# still names the original, so only the kept one can satisfy it.
+rung_kept_download() {
+    archive 0.9.9
+    sharpie install 0.9.9
+    exited 0 || return 1
+    sharpie uninstall 0.9.9
+    exited 0 || return 1
+
+    printf 'not the archive any more\n' > "$releases/wsharp-0.9.9-$triple.tar.gz"
+    sharpie install 0.9.9
+    exited 0 || return 1
+    says "installed" || return 1
+    if [ ! -x "$mine/home/toolchains/$(full 0.9.9)/wsharp$EXE" ]; then
+        note "0.9.9 was not installed from the kept download"
+        return 1
+    fi
+
+    # And a kept download that is not the published one is not used: it is
+    # fetched again, and here what is published is broken, so that fails
+    # rather than installing the stale copy.
+    sharpie uninstall 0.9.9
+    exited 0 || return 1
+    printf 'half of an archive' > "$mine/home/downloads/wsharp-0.9.9-$triple.tar.gz"
+    sharpie install 0.9.9
+    exited 2 || return 1
+    says "what was downloaded is not what was published" || return 1
+
+    forget 0.9.9
+    return 0
+}
+
 # Fault injection three: an install that stops part way through the extraction.
 #
 # **Injected as an archive that cannot be written out, not as a signal.** A
@@ -1095,6 +1166,8 @@ refuses_the_missing:a rung naming what is not installed refuses
 refuses_a_path:a rung or a verb naming a path refuses
 truncated_download:a truncated download
 digest_mismatch:a digest mismatch
+changed_release:a published release that changes is refused
+kept_download:a retry takes the archive it already has
 interrupted_extract:an install interrupted mid-extract
 self_upgrade:an upgrade of sharpie itself, cut short, leaves the one that was there"
 

@@ -65,7 +65,17 @@ pub fn asked(s: settings.Settings, args: []str, cwd: str) ?Ask {
     if (os.get("SHARPIE_TOOLCHAIN")) |named| {
         if (text.len(named) > 0) { return Ask{ .name = named, .why = "SHARPIE_TOOLCHAIN" }; }
     }
-    if (pinned_above(cwd)) |named| { return Ask{ .name = named, .why = PIN_FILE }; }
+    if (pin_file_above(cwd)) |file| {
+        if (pinned_in(file)) |named| { return Ask{ .name = named, .why = PIN_FILE }; }
+        // **A pin file that says nothing usable still decides.** It used to stop
+        // the upward walk and then let the ladder fall through to the override
+        // and the default -- so a typo in a project's pin, or a file that is not
+        // TOML at all, silently ran whatever the machine's default was instead
+        // of what the project asked for. It answers with the empty name, which
+        // no name is, so [`located`] refuses it and [`why_nothing`] says which
+        // file it was.
+        return Ask{ .name = "", .why = text.concat(text.concat(PIN_FILE, " at "), file) };
+    }
     if (settings.override_for(s, cwd)) |named| {
         return Ask{ .name = named, .why = "a directory override" };
     }
@@ -97,6 +107,10 @@ pub fn why_nothing(s: settings.Settings, args: []str, cwd: str) str {
     const a = asked(s, args, cwd) orelse {
         return "nothing is chosen; `sharpie install stable` gets a toolchain and makes it the default";
     };
+    if (text.len(a.name) == 0 and text.starts_with(a.why, PIN_FILE)) {
+        return text.concat(text.concat("the ", a.why),
+            " names no toolchain: it needs `toolchain = \"<version>\"`, or a `[toolchain]` table with a `channel`");
+    }
     // Before "not installed", which would be true and would send the reader to
     // `toolchain list` looking for a directory that must never be there.
     if (!home.is_name(a.name)) {
@@ -172,23 +186,18 @@ pub fn without_plus(args: []str) []str {
     return array.slice(args, 1, array.len(args));
 }
 
-/// The toolchain a `wsharp-toolchain.toml` names, looked for from `dir` upwards.
+/// The nearest `wsharp-toolchain.toml` at or above `dir`, or null.
 ///
 /// Upwards, so a file at the root of a project covers every directory in it --
 /// which is what makes it a *project's* pin rather than one directory's. The
-/// walk stops at the filesystem root.
-pub fn pinned_above(dir: str) ?str {
+/// walk stops at the filesystem root, and at the first file it finds whatever
+/// that file says: one that is there and says nothing usable is not stepped
+/// over for a parent's, because it was put there on purpose.
+pub fn pin_file_above(dir: str) ?str {
     var at = path.normalise(dir);
     while (true) {
         const file = path.join(at, PIN_FILE);
-        if (io.exists(file)) {
-            if (pinned_in(file)) |named| { return named; }
-            // A file that is there and says nothing usable stops the walk
-            // rather than being stepped over: it was put there on purpose, and
-            // silently using a parent's pin instead would be worse than saying
-            // nothing.
-            return null;
-        }
+        if (io.exists(file)) { return file; }
         const up = path.dirname(at);
         if (text.eq(up, at)) { return null; }
         at = up;

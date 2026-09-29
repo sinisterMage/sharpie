@@ -87,9 +87,13 @@ pub fn downloads(h: str) str { return path.join(h, "downloads"); }
 /// installed. Same discipline as `ingot/store.install`.
 pub fn scratch(h: str) str { return path.join(h, "tmp"); }
 
-/// The one file sharpie writes about itself: the default, the overrides and
-/// the linked directories.
+/// The file sharpie keeps its choices in: the default, the overrides and the
+/// linked directories.
 pub fn settings(h: str) str { return path.join(h, "settings.toml"); }
+
+/// What each release archive hashed to when this home first installed it.
+/// See `ledger.ws`.
+pub fn ledger(h: str) str { return path.join(h, "digests.tsv"); }
 
 // ---------------------------------------------------------------------------
 // What a toolchain is called
@@ -125,10 +129,19 @@ pub fn settings(h: str) str { return path.join(h, "settings.toml"); }
 ///
 /// An allow-list rather than a list of what to refuse, because the list of what
 /// to refuse is the one that forgets `\` on the platform nobody ran it on.
+///
+/// Two more refusals, both for Windows and both made everywhere, because a pin
+/// file is written on one machine and read on another. A name may not end in
+/// `.`, which Windows strips, so `1.0.` and `1.0` would be one directory under
+/// two names. And a name may not be a DOS device -- `con`, `nul`, `com1` and the
+/// rest, in any case and with anything after a `.` -- because
+/// `toolchains/nul` on Windows is not a directory but the null device, and
+/// `toolchains/con.x` the console.
 pub fn is_name(name: str) bool {
     const n = text.len(name);
     if (n == 0) { return false; }
     if (!alphanumeric(text.byte_at(name, 0))) { return false; }
+    if (text.byte_at(name, n - 1) == 46) { return false; }
     var i = 0;
     while (i < n) : (i += 1) {
         const b = text.byte_at(name, i);
@@ -136,7 +149,26 @@ pub fn is_name(name: str) bool {
         const joiner = b == 46 or b == 45 or b == 43 or b == 95;
         if (!alphanumeric(b) and !joiner) { return false; }
     }
+    if (is_device(name)) { return false; }
     return text.find(name, "..") < 0;
+}
+
+/// Whether Windows reads `name` as a device rather than a file: its part before
+/// the first `.` is one of the reserved names, whatever the case.
+fn is_device(name: str) bool {
+    var stem = name;
+    const dot = text.find(name, ".");
+    if (dot >= 0) { stem = text.substr(name, 0, dot); }
+    const low = text.to_lower(stem);
+    for ([]str{ "con", "prn", "aux", "nul" }) |reserved| {
+        if (text.eq(low, reserved)) { return true; }
+    }
+    // `com1` to `com9` and `lpt1` to `lpt9`. `com0` is not one.
+    if (text.len(low) == 4 and (text.starts_with(low, "com") or text.starts_with(low, "lpt"))) {
+        const d = text.byte_at(low, 3);
+        return d >= 49 and d <= 57;
+    }
+    return false;
 }
 
 fn alphanumeric(b: i64) bool {

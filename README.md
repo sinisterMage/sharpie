@@ -69,6 +69,12 @@ follow a channel again, and the next `update` moves it along. While it follows
 one, `update` puts the default on whatever the channel names now -- whether it
 had to fetch that release or found it already installed by its number.
 
+**Upgrading from sharpie 0.1.2 or earlier:** those versions did not stop the
+default following its channel when you ran `sharpie default`, and nothing in
+their `settings.toml` says whether you meant to pin. If you rolled back with
+`sharpie default <previous>`, run it once more after upgrading, and the next
+`update` will leave it where you put it.
+
 Output is tab-separated, one record a line, as `ingot`'s is -- so it composes
 with `cut` instead of needing a `--json` that would have to be kept in step
 with it.
@@ -101,14 +107,19 @@ No other verb takes one, and each of them says so rather than ignoring it.
 
 A rung naming a toolchain that is not installed **stops there** rather than
 falling through to the next one: quietly running a different compiler than the
-one that was asked for, and saying nothing about it, is worse than refusing.
+one that was asked for, and saying nothing about it, is worse than refusing. So
+does a `wsharp-toolchain.toml` that names nothing usable -- one that is not
+TOML, or has no `toolchain` -- which says which file it was rather than running
+the machine's default instead of the project's choice.
 
 So does a rung naming something that is not a toolchain name at all. A name is
 a version (`0.2.3`, `0.2.0-rc1`, bare or with its triple), a channel (`stable`,
 `latest`), or whatever was given to `sharpie toolchain link`: ASCII letters and
 digits with `.`, `-`, `+` and `_` among them, starting with a letter or a digit.
 It is **never a path** -- no `/` or `\`, no `..`, no drive letter, nothing
-hidden, nothing empty. A `wsharp-toolchain.toml` is a file in whatever
+hidden, nothing empty -- and never a name Windows treats specially: not a DOS
+device (`con`, `nul`, `com1` and the rest, whatever follows a `.`), and not
+ending in a `.`, which Windows strips. A `wsharp-toolchain.toml` is a file in whatever
 repository was just cloned, and a name that could climb out of
 `~/.sharpie/toolchains/` would let that file decide which program `wsharp`
 runs. Every verb that takes a toolchain -- `default`, `uninstall`, `override
@@ -125,8 +136,13 @@ a directory:
 ├── toolchains/<version>-<triple>/ wsharp, ingot, lib/libwsharp_start.a
 ├── downloads/                     tarballs, kept so a retry need not refetch
 ├── tmp/                           staging, renamed into place atomically
+├── digests.tsv                    what each release hashed to when first installed
 └── settings.toml
 ```
+
+A kept download that still hashes to the published digest *is* the published
+archive, so an install after an uninstall, a repair and a retry after a failed
+unpack all take it from `downloads/` rather than fetching it again.
 
 A toolchain directory without a runnable `wsharp` and `ingot` in it is damaged,
 not installed: `install` and `update` fetch it again and put the new one in its
@@ -143,6 +159,15 @@ By default, the tags and the release assets on
 remote for its tags over git's smart HTTP transport, and fetches
 `wsharp-<version>-<triple>.tar.gz` and the `.sha256` beside it. What arrives is
 checked against the published digest before anything is unpacked.
+
+**A published release never changes, and sharpie holds it to that.** The
+digest proves an archive arrived intact, not that it is the archive that was
+there last week -- whoever can replace one can replace both. So the digest
+first seen for each archive is written to `digests.tsv`, and a later install of
+the same version that is offered a different one is refused before anything is
+fetched. That is trust on first use: less than a signature, which is planned for
+1.1, and much more than nothing. If a release really was rebuilt on purpose,
+deleting its line is how to accept the new one.
 
 `SHARPIE_RELEASE_DIR` naming a directory is used **where it lies**, and then no
 socket is opened and the machine's certificate store is not read. The directory
@@ -217,9 +242,11 @@ separate verb, because every toolchain an update installed is still there under
 its own name -- and which survives the next `update`), an uninstall, a rung
 naming something that is not installed refusing rather than falling through, a
 rung or a verb naming a path refusing likewise, a toolchain whose programs are
-gone being installed again rather than trusted, and three fault injections: a
-truncated download, a digest mismatch, and an extraction that stops part way.
-Each of the three has to leave the toolchain that was working still working. A
+gone being installed again rather than trusted, a published release whose bytes
+change being refused, a retry taking the archive it already has, and three fault
+injections: a truncated download, a digest mismatch, and an extraction that
+stops part way. Each of the three has to leave the toolchain that was working
+still working. A
 last rung runs `install.sh` itself, offline, and cuts its copy short part way:
 the `bin/sharpie` that was there has to still be there, byte for byte.
 `tests/install-ps1.ps1` does the same to `install.ps1`, and CI runs it under

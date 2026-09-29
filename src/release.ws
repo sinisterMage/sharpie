@@ -293,76 +293,83 @@ pub fn digest_of(sidecar: str) !{BadFormat}str {
 /// The checksum is fetched **first**, so a mismatch is measured against
 /// something published rather than against whatever happened to arrive
 /// alongside. Both go through `fetch.get`, because a release download is a
-/// redirect to another host.
+/// redirect to another host. The two halves are [`published_digest`] and
+/// [`fetch_archive`], which a caller that has something to compare the digest
+/// with first -- a ledger, a kept download -- uses separately.
 pub fn download(f: fault.Fault, v: semver.Version, triple: str, cfg: tls.Config) ?str {
-    if (local()) |at| { return read_local(f, at, v, triple); }
-    const url = archive_url(v, triple);
-    const sidecar = fetch.get(checksum_url(v, triple), cfg) catch {
-        // **A tag exists before its release does.** Versions are discovered by
-        // asking the remote for its tags, and a tag is pushed *first* -- the
-        // archives appear minutes later when the build that the tag started
-        // finishes, and one that fails never publishes for that platform at
-        // all. So the newest version is routinely the one that cannot be
-        // installed yet, and "cannot reach the checksum" is a confusing way to
-        // say that.
-        //
-        // The two cases are not told apart here, because doing so means asking
-        // the forge's API what a release holds, and its answer is JSON -- which
-        // is the dependency this whole module is written to avoid. Naming both
-        // is honest and costs nothing.
-        fault.fail(f, text.concat(text.concat("no archive published for ", triple),
-            text.concat(text.concat(" at ", semver.render(v)),
-                " -- its release may still be building, or may have failed for this platform")));
-        return null;
-    };
-    const want = digest_of(sidecar) catch {
-        fault.fail(f, text.concat("the published checksum is not a digest: ", url));
-        return null;
-    };
-    const archive = fetch.get(url, cfg) catch {
-        fault.fail(f, text.concat("cannot download ", url));
-        return null;
-    };
-    const ok = verified(archive, want) catch {
-        fault.fail(f, text.concat("what was downloaded is not what was published: ", url));
-        return null;
-    };
-    return ok;
+    const want = published_digest(f, v, triple, cfg) orelse return null;
+    return fetch_archive(f, v, triple, cfg, want);
 }
 
-/// The same two files out of a local release directory.
-///
-/// **The digest is checked here exactly as a download's is, by the same two
-/// functions and in the same order.** That is the whole point of the offline
-/// path: a directory standing in for a published release has to be able to be
-/// wrong in the ways a network can be wrong, or the checking that catches those
-/// has nothing driving it. A short archive and a substituted one both fail
-/// [`verified`], and a truncated sidecar fails [`digest_of`] -- which is what its
-/// length-and-hex check was written for and what nothing exercised until now.
-///
-/// A missing sidecar reads the same way the network's missing one does. The
-/// remote's reason ("the release may still be building") does not apply to a
-/// directory, so the wording says what is true of a directory instead.
-fn read_local(f: fault.Fault, at: str, v: semver.Version, triple: str) ?str {
+/// The digest a release publishes beside its archive for `triple`.
+pub fn published_digest(f: fault.Fault, v: semver.Version, triple: str, cfg: tls.Config) ?str {
     const name = archive_name(v, triple);
-    const beside = path.join(at, text.concat(name, ".sha256"));
-    const sidecar = io.read_file(beside) catch {
-        fault.fail(f, text.concat(text.concat("no archive published for ", triple),
-            text.concat(text.concat(" at ", semver.render(v)),
-                text.concat(" -- nothing is beside it at ", beside))));
-        return null;
-    };
+    var where = checksum_url(v, triple);
+    var sidecar = "";
+    if (local()) |at| {
+        where = path.join(at, text.concat(name, ".sha256"));
+        // A missing sidecar reads the same way the network's missing one does.
+        // The remote's reason ("the release may still be building") does not
+        // apply to a directory, so the wording says what is true of one.
+        sidecar = io.read_file(where) catch {
+            fault.fail(f, text.concat(text.concat("no archive published for ", triple),
+                text.concat(text.concat(" at ", semver.render(v)),
+                    text.concat(" -- nothing is beside it at ", where))));
+            return null;
+        };
+    } else {
+        sidecar = fetch.get(where, cfg) catch {
+            // **A tag exists before its release does.** Versions are discovered
+            // by asking the remote for its tags, and a tag is pushed *first* --
+            // the archives appear minutes later when the build that the tag
+            // started finishes, and one that fails never publishes for that
+            // platform at all. So the newest version is routinely the one that
+            // cannot be installed yet, and "cannot reach the checksum" is a
+            // confusing way to say that.
+            //
+            // The two cases are not told apart here, because doing so means
+            // asking the forge's API what a release holds, and its answer is
+            // JSON -- which is the dependency this whole module is written to
+            // avoid. Naming both is honest and costs nothing.
+            fault.fail(f, text.concat(text.concat("no archive published for ", triple),
+                text.concat(text.concat(" at ", semver.render(v)),
+                    " -- its release may still be building, or may have failed for this platform")));
+            return null;
+        };
+    }
     const want = digest_of(sidecar) catch {
-        fault.fail(f, text.concat("the published checksum is not a digest: ", beside));
+        fault.fail(f, text.concat("the published checksum is not a digest: ", where));
         return null;
     };
-    const whole = path.join(at, name);
-    const archive = io.read_file(whole) catch {
-        fault.fail(f, text.concat("cannot download ", whole));
-        return null;
-    };
+    return want;
+}
+
+/// The archive for `triple` at `v`, if it hashes to `want`.
+///
+/// **The local path is checked exactly as a download is, by the same function.**
+/// That is the whole point of the offline path: a directory standing in for a
+/// published release has to be able to be wrong in the ways a network can be
+/// wrong, or the checking that catches those has nothing driving it. A short
+/// archive and a substituted one both fail [`verified`], and a truncated
+/// sidecar fails [`digest_of`] in [`published_digest`] -- which is what its
+/// length-and-hex check was written for.
+pub fn fetch_archive(f: fault.Fault, v: semver.Version, triple: str, cfg: tls.Config, want: str) ?str {
+    var where = archive_url(v, triple);
+    var archive = "";
+    if (local()) |at| {
+        where = path.join(at, archive_name(v, triple));
+        archive = io.read_file(where) catch {
+            fault.fail(f, text.concat("cannot download ", where));
+            return null;
+        };
+    } else {
+        archive = fetch.get(where, cfg) catch {
+            fault.fail(f, text.concat("cannot download ", where));
+            return null;
+        };
+    }
     const ok = verified(archive, want) catch {
-        fault.fail(f, text.concat("what was downloaded is not what was published: ", whole));
+        fault.fail(f, text.concat("what was downloaded is not what was published: ", where));
         return null;
     };
     return ok;
