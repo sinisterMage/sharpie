@@ -17,6 +17,7 @@ const fs = @import("std/fs");
 const home = @import("./home.ws");
 const install = @import("./install.ws");
 const io = @import("std/io");
+const ledger = @import("./ledger.ws");
 const os = @import("std/os");
 const path = @import("std/path");
 const proxy = @import("./proxy.ws");
@@ -188,6 +189,7 @@ fn set_default(f: fault.Fault, args: []str) i64 {
         fault.fail(f, "`default` takes one toolchain, such as `sharpie default 0.1.0`");
         return FAILED;
     }
+    if (!toolchain.named(f, args[0])) { return FAILED; }
     const h = opened(f) orelse return FAILED;
     const s = read_settings(f, h) orelse return FAILED;
 
@@ -201,6 +203,12 @@ fn set_default(f: fault.Fault, args: []str) i64 {
         return FAILED;
     };
     settings.set_default(s, found.name);
+    // **A default chosen by name is pinned**, and `update` leaves it where it
+    // is. This is the whole of rollback -- `sharpie default <previous>` -- and
+    // without it the next `update` moved the default straight back on to the
+    // release somebody had just rolled back from. `install stable` is how the
+    // default starts following a channel again.
+    settings.unset_channel(s);
     settings.save(h, s) catch {
         fault.fail(f, text.concat("cannot write ", home.settings(h)));
         return FAILED;
@@ -255,6 +263,10 @@ fn toolchain_link(f: fault.Fault, args: []str) i64 {
         fault.fail(f, "`toolchain link` takes a name and a directory");
         return FAILED;
     }
+    // The *name* is checked and the directory is not: a link is exactly the one
+    // place a toolchain is allowed to be a path, and it is the path that says
+    // so -- never the name, which is what a pin file gets to write.
+    if (!toolchain.named(f, args[0])) { return FAILED; }
     const h = opened(f) orelse return FAILED;
     const s = read_settings(f, h) orelse return FAILED;
     const dir = args[1];
@@ -450,6 +462,9 @@ fn install_verb(f: fault.Fault, args: []str) i64 {
         fault.fail(f, "`install` takes one version or channel, such as `sharpie install stable`");
         return FAILED;
     }
+    // Before anything is asked of the network: no release can match a path, and
+    // saying so costs nothing.
+    if (!toolchain.named(f, args[0])) { return FAILED; }
     const h = opened(f) orelse return FAILED;
     const s = read_settings(f, h) orelse return FAILED;
 
@@ -468,36 +483,39 @@ fn install_verb(f: fault.Fault, args: []str) i64 {
 
     const triple = os.target();
     const name = home.spell(semver.render(want), triple);
-    if (fs.is_dir(home.toolchain(h, name))) {
+    // Intact, not merely there: a toolchain with its `wsharp` gone used to
+    // answer `already`, and `install.unpack` now replaces one like that.
+    if (toolchain.intact(home.toolchain(h, name))) {
         print(text.concat("already\t", name));
         if (release.is_channel(args[0])) { settings.set_channel(s, args[0]); }
-        return adopt(f, h, s, name);
+        return adopt(f, h, s, name, release.is_channel(args[0]));
     }
 
-    // The archive is written down before it is unpacked, so a failure part way
-    // through leaves something a retry can use rather than a hole.
-    const archive = release.download(f, want, triple, cfg) orelse return FAILED;
-    if (!keep(f, h, release.archive_name(want, triple), archive)) { return FAILED; }
+    const archive = obtained(f, h, want, triple, cfg) orelse return FAILED;
     if (!install.unpack(f, h, name, archive)) { return FAILED; }
 
     print(text.concat("installed\t", name));
     if (release.is_channel(args[0])) { settings.set_channel(s, args[0]); }
-    return adopt(f, h, s, name);
+    return adopt(f, h, s, name, release.is_channel(args[0]));
 }
 
 /// Make a freshly installed toolchain the default when there is not one yet.
 ///
 /// Only when there is not one: installing a second toolchain should not quietly
-/// move somebody off the one they were using.
-fn adopt(f: fault.Fault, h: str, s: settings.Settings, name: str) i64 {
+/// move somebody off the one they were using. `following` says whether it was
+/// asked for by channel; adopted from a version, the default is pinned from the
+/// start, as if chosen with `sharpie default`.
+fn adopt(f: fault.Fault, h: str, s: settings.Settings, name: str, following: bool) i64 {
     // Saved either way, and that matters: the caller may have just recorded a
     // channel, and returning early because a default already exists would
-    // throw that away -- so `update` would then say nothing was installed from
-    // a channel, having just installed one.
+    // throw that away -- so `update` would then find no channel to follow,
+    // having just been asked for one. From here the default follows it, and
+    // it is `update` that moves the default along, saying so when it does.
     var chose = false;
     if (settings.default_toolchain(s)) |already| {
     } else {
         settings.set_default(s, name);
+        if (!following) { settings.unset_channel(s); }
         chose = true;
     }
     settings.save(h, s) catch {
@@ -506,6 +524,66 @@ fn adopt(f: fault.Fault, h: str, s: settings.Settings, name: str) i64 {
     };
     if (chose) { print(text.concat("default\t", name)); }
     return OK;
+}
+
+/// The archive for `v` on `triple`: published, unchanged, and fetched at most
+/// once.
+///
+/// Three checks, in the order that costs least:
+///
+///   - **The published digest against the ledger.** A release that has
+///     changed since this home first installed it is refused before a byte of
+///     the archive is fetched. See `ledger.ws` for why that can happen at all.
+///   - **A kept download against the published digest.** `downloads/` holds
+///     every archive this home has fetched, and one that still hashes to what
+///     is published *is* what is published: an interrupted unpack, a repair of
+///     a damaged toolchain and an install after an uninstall all take it from
+///     there. One that does not -- half-written, or from before a change the
+///     ledger has already refused -- is fetched again.
+///   - **A fetched archive against the published digest**, in
+///     [`release.fetch_archive`], as before.
+///
+/// The archive is written down before it is unpacked, so a failure part way
+/// through leaves something a retry can use rather than a hole.
+fn obtained(f: fault.Fault, h: str, v: semver.Version, triple: str, cfg: tls.Config) ?str {
+    const name = release.archive_name(v, triple);
+    const want = release.published_digest(f, v, triple, cfg) orelse return null;
+    if (ledger.remembered(h, name)) |first| {
+        if (!text.eq(first, want)) {
+            var why = text.concat(name, " has changed since this home first installed it: it hashed to ");
+            why = text.concat(why, first);
+            why = text.concat(why, " then and is published as ");
+            why = text.concat(why, want);
+            why = text.concat(why, " now. A published release never changes, so this is refused; if it was rebuilt on purpose, remove its line from ");
+            fault.fail(f, text.concat(why, home.ledger(h)));
+            return null;
+        }
+    }
+    if (kept(h, name, want)) |archive| {
+        if (!noted(f, h, name, want)) { return null; }
+        return archive;
+    }
+    const archive = release.fetch_archive(f, v, triple, cfg, want) orelse return null;
+    if (!keep(f, h, name, archive)) { return null; }
+    if (!noted(f, h, name, want)) { return null; }
+    return archive;
+}
+
+/// The kept download of `name`, if it is there and hashes to `want`.
+fn kept(h: str, name: str, want: str) ?str {
+    const archive = io.read_file(path.join(home.downloads(h), name)) catch return null;
+    return release.verified(archive, want) catch return null;
+}
+
+/// Write the digest into the ledger. A failure stops the install: the ledger
+/// is the only record that a later install would be held to, so going on
+/// without it would quietly give that up.
+fn noted(f: fault.Fault, h: str, name: str, want: str) bool {
+    ledger.remember(h, name, want) catch {
+        fault.fail(f, text.concat("cannot write ", home.ledger(h)));
+        return false;
+    };
+    return true;
 }
 
 /// Keep the downloaded archive, so a failed unpack need not fetch it again.
@@ -520,18 +598,18 @@ fn keep(f: fault.Fault, h: str, name: str, archive: str) bool {
     return true;
 }
 
-/// Re-ask the channel the default came from, and install what it says now.
+/// Re-ask the channel the default follows, and put the default where it says.
 ///
 /// Only a channel is re-asked. Somebody who installed `0.1.8` asked for
 /// `0.1.8`, and moving them off it because something newer exists would be
 /// answering a question they did not put -- which is why `install` records
-/// whether the request was standing.
+/// whether the request was standing, and why `sharpie default` ends it.
 fn update_verb(f: fault.Fault) i64 {
     const h = opened(f) orelse return FAILED;
     const s = read_settings(f, h) orelse return FAILED;
 
     const chan = settings.channel(s) orelse {
-        fault.fail(f, "nothing was installed from a channel; `sharpie install stable` starts one");
+        fault.fail(f, "the default follows no channel; `sharpie install stable` starts following one");
         return NOTHING;
     };
     const cfg = anchors(f) orelse return FAILED;
@@ -544,19 +622,23 @@ fn update_verb(f: fault.Fault) i64 {
 
     const triple = os.target();
     const name = home.spell(semver.render(want), triple);
-    if (fs.is_dir(home.toolchain(h, name))) {
+    if (toolchain.intact(home.toolchain(h, name))) {
         print(text.concat(text.concat("current\t", chan), text.concat("\t", name)));
-        return OK;
+    } else {
+        const archive = obtained(f, h, want, triple, cfg) orelse return FAILED;
+        if (!install.unpack(f, h, name, archive)) { return FAILED; }
+        print(text.concat("installed\t", name));
     }
 
-    const archive = release.download(f, want, triple, cfg) orelse return FAILED;
-    if (!keep(f, h, release.archive_name(want, triple), archive)) { return FAILED; }
-    if (!install.unpack(f, h, name, archive)) { return FAILED; }
-    print(text.concat("installed\t", name));
-
-    // The channel moved, so what it points at moves with it. This is the one
+    // The default follows the channel, so it goes wherever the channel is --
+    // whether that release arrived just now or was already here. It used to
+    // move only when something had to be fetched, so a release installed
+    // earlier by its number (`sharpie install 1.2.0`) left `update` saying
+    // `current` with the default still on the one before. This is the one
     // place a default is changed without being asked for by name, and it is
     // what "install stable" meant in the first place.
+    const was = settings.default_toolchain(s) orelse "";
+    if (text.eq(was, name)) { return OK; }
     settings.set_default(s, name);
     if (!saved(f, h, s)) { return FAILED; }
     print(text.concat("default\t", name));
@@ -566,6 +648,19 @@ fn update_verb(f: fault.Fault) i64 {
 fn uninstall_verb(f: fault.Fault, args: []str) i64 {
     if (array.len(args) != 1) {
         fault.fail(f, "`uninstall` takes one toolchain");
+        return FAILED;
+    }
+    // **First, and not only because `located` would refuse it too.** This verb
+    // ends in a recursive delete, and `uninstall /any/dir` used to delete
+    // `/any/dir`: saying "not a toolchain name" here is what makes the refusal
+    // read as one rather than as "not installed", which invites a retry.
+    if (!toolchain.named(f, args[0])) { return FAILED; }
+    // A channel names whichever installed toolchain is newest on it, which is
+    // the right answer for running something and the wrong one for deleting
+    // it: a recursive delete is never aimed by a guess.
+    if (release.is_channel(args[0])) {
+        fault.fail(f, text.concat(text.concat("`", args[0]),
+            "` is a channel; `uninstall` takes a toolchain's version, and `sharpie toolchain list` says which are installed"));
         return FAILED;
     }
     const h = opened(f) orelse return FAILED;
@@ -626,6 +721,7 @@ fn override_verb(f: fault.Fault, args: []str) i64 {
         }
         var dir = cwd;
         if (array.len(rest) == 2) { dir = rest[1]; }
+        if (!toolchain.named(f, rest[0])) { return FAILED; }
         const found = toolchain.located(h, s, rest[0], "asked for") orelse {
             fault.fail(f, text.concat(text.concat("`", rest[0]), "` is not installed"));
             return FAILED;

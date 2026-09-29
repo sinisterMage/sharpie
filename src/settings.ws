@@ -81,18 +81,40 @@ pub fn set_default(s: Settings, name: str) void {
     return;
 }
 
-/// The channel the default was installed from, or null.
+/// The channel the default follows, or null when it follows none.
 ///
 /// Recorded because a channel is a *standing* request and a version is not:
 /// somebody who asked for `stable` wants the newest stable from then on, and
 /// somebody who asked for `0.1.8` asked for `0.1.8`. Without this, `update`
 /// would have to guess which of the two it was looking at.
+///
+/// **It describes the default as it stands, not how it began.** `sharpie
+/// default <toolchain>` is a request by name like any other, so it stops the
+/// default following ([`unset_channel`]) -- and that is what makes
+/// `sharpie default <previous>` a rollback. When this said only which channel
+/// something had once been installed from, the next `update` moved the default
+/// straight back to the release it had been rolled back from.
+///
+/// An empty value is none, because that is how [`unset_channel`] writes it.
 pub fn channel(s: Settings) ?str {
-    return string_at(s.root, "channel");
+    const named = string_at(s.root, "channel") orelse return null;
+    if (text.len(named) == 0) { return null; }
+    return named;
 }
 
 pub fn set_channel(s: Settings, name: str) void {
     toml.set(s.root, "channel", toml.of_str(name));
+    return;
+}
+
+/// Stop the default following a channel: it stays on what it names now.
+///
+/// Written as an empty string rather than removed, because `std/toml` has no
+/// way to remove a key -- the reason [`put_tables`] writes an empty array. Only
+/// when there is a channel to stop, so a home that never had one is not given
+/// a line saying so.
+pub fn unset_channel(s: Settings) void {
+    if (channel(s)) |was| { toml.set(s.root, "channel", toml.of_str("")); }
     return;
 }
 

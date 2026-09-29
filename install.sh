@@ -3,15 +3,17 @@
 #
 # This is the one piece that cannot be written in W#, and the reason is the
 # whole bootstrap: it runs *before* there is a W# toolchain to run anything
-# else with. So it is POSIX shell, it assumes only `uname`, `tar` and one of
-# `curl`/`wget`, and it does exactly as much as it must -- work out which
+# else with. So it is POSIX shell, it assumes only `uname`, `tar`, `curl` (or
+# `wget` when `SHARPIE_VERSION` says which release) and `sha256sum` or `shasum`,
+# and it does exactly as much as it must -- work out which
 # build belongs to this machine, fetch it, check it, and hand over to sharpie
 # for everything after that.
 #
 #   curl -fsSL https://raw.githubusercontent.com/sinisterMage/sharpie/main/install.sh | sh
 #
 # `SHARPIE_HOME` says where to install; `SHARPIE_VERSION` pins a version rather
-# than taking the newest.
+# than taking the newest; `SHARPIE_REPO` names the repository to take sharpie's
+# releases from (a fork's, say).
 #
 # This runs on Windows too, under Git Bash or MSYS, and `install.ps1` is the
 # same thing for a PowerShell that has neither.
@@ -109,9 +111,12 @@ say "sharpie ${version} for ${triple}"
 # ---------------------------------------------------------------------------
 
 work=$(mktemp -d)
+# Named below, once there is a `bin/` to stage it in.
+staged=""
 # `trap` rather than a tidy-up at the end: this exits early in a dozen places
-# and every one of them should leave nothing behind.
-trap 'rm -rf "$work"' EXIT INT TERM
+# and every one of them should leave nothing behind -- including a half-copied
+# binary beside `bin/sharpie`, which is the one thing here outside `$work`.
+trap 'rm -rf "$work"; if [ -n "$staged" ]; then rm -f "$staged"; fi' EXIT INT TERM
 
 # A missing archive is the one failure worth naming, because it is the one a
 # user can do nothing about and the raw message for it -- a 404 out of curl --
@@ -141,10 +146,33 @@ tar -xzf "${work}/${stage}.tar.gz" -C "$work"
 mkdir -p "${HOME_DIR}/bin"
 # One binary. `sharpie init` makes the proxies out of it, because deciding what
 # to proxy is sharpie's business and not this script's.
-cp "${work}/${stage}/sharpie${exe}" "${HOME_DIR}/bin/sharpie${exe}"
-chmod 0755 "${HOME_DIR}/bin/sharpie${exe}"
+#
+# **Staged beside its name and renamed over it, never copied in place.** Running
+# this again is how sharpie is upgraded, so `bin/sharpie` is usually a working
+# binary already -- and `cp` on to it truncates it first, so a copy that stopped
+# part way (a full disk, a Ctrl-C, a closed laptop) left half a binary under the
+# one name every proxy is made from. A `rename` in the same directory is atomic:
+# the name holds the old binary until it holds the whole new one. It is also
+# what `init` does for the proxies, for the same reasons.
+target="${HOME_DIR}/bin/sharpie${exe}"
+staged="${target}.$$"
+cp "${work}/${stage}/sharpie${exe}" "$staged" || die "cannot write $staged"
+chmod 0755 "$staged"
+if ! mv -f "$staged" "$target" 2>/dev/null; then
+    # Windows will not replace a file that is being run, and will rename one:
+    # so the old binary moves aside to `.old` and the new one takes the name,
+    # which is `init`'s answer to the same refusal. Unix never gets here.
+    rm -f "${target}.old"
+    mv -f "$target" "${target}.old" || die "cannot put sharpie at $target"
+    if ! mv -f "$staged" "$target"; then
+        # Put the old one back: a failed upgrade leaves what was there.
+        mv -f "${target}.old" "$target" || true
+        die "cannot put sharpie at $target"
+    fi
+fi
+staged=""
 
-"${HOME_DIR}/bin/sharpie${exe}" init
+"$target" init
 
 say ""
 say "Add this to your shell's profile:"

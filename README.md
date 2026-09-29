@@ -29,14 +29,19 @@ export PATH="$HOME/.sharpie/bin:$PATH"
 ```
 
 `SHARPIE_HOME` says where to install; `SHARPIE_VERSION` pins a version rather
-than taking the newest. Both installers read both.
+than taking the newest; `SHARPIE_REPO` takes sharpie's releases from another
+repository, such as a fork. Both installers read all three.
 
-The shell script assumes only `uname`, `tar` and one of `curl`/`wget`; the
-PowerShell one assumes `tar`, which Windows has shipped since Windows 10 1803.
+The shell script assumes only `uname`, `tar`, `curl` (or `wget` once
+`SHARPIE_VERSION` says which release, since finding the newest needs `curl`)
+and `sha256sum` or `shasum`; the PowerShell one assumes `tar`, which Windows has
+shipped since Windows 10 1803.
 Each checks what it downloaded against a published digest and hands over to
 `sharpie init` for everything after that. Upgrading sharpie is running it again:
 it drops a new binary in and `init` rewrites the proxies as copies of it, which
-is why there is no `self update` verb.
+is why there is no `self update` verb. The new binary is written beside the old
+one and renamed over it, never copied on to it, so an upgrade cut short part way
+leaves the sharpie that was there rather than half of the new one.
 
 `install.sh` runs on Windows too, under Git Bash or MSYS -- `install.ps1` is
 there for the machine that has neither, and is otherwise the same script.
@@ -49,7 +54,7 @@ get ahead of that list.
 ## Using it
 
 ```sh
-sharpie install stable      # fetch a toolchain and make it the default
+sharpie install stable      # fetch a toolchain; the default, if there is none yet
 wsharp build hello.ws       # through the proxy, into that toolchain
 sharpie show                # what would run here, and why
 sharpie update              # re-ask the channel and follow it
@@ -59,9 +64,35 @@ sharpie update              # re-ask the channel and follow it
 version is a one-off and is left alone. That distinction is recorded at install
 time, so somebody who asked for `0.1.0` is never quietly moved off it.
 
+`sharpie default <toolchain>` is a request by name too, so it **pins** the
+default: `update` then has no channel to follow and says so, rather than moving
+the default anywhere. That is what makes `sharpie default <previous>` a rollback
+the next `update` does not undo. `sharpie install stable` makes the default
+follow a channel again, and the next `update` moves it along. While it follows
+one, `update` puts the default on whatever the channel names now -- whether it
+had to fetch that release or found it already installed by its number.
+
+**Upgrading from sharpie 0.1.2 or earlier:** those versions did not stop the
+default following its channel when you ran `sharpie default`, and nothing in
+their `settings.toml` says whether you meant to pin. If you rolled back with
+`sharpie default <previous>`, run it once more after upgrading, and the next
+`update` will leave it where you put it.
+
 Output is tab-separated, one record a line, as `ingot`'s is -- so it composes
 with `cut` instead of needing a `--json` that would have to be kept in step
 with it.
+
+`sharpie help` lists every verb. Beyond the four above there are `default`,
+`uninstall`, `which <command>`, `toolchain list`, `toolchain link <name> <dir>`
+(a name for a directory that holds a toolchain, such as a compiler checkout;
+linking the name again repoints it) and `override set | unset | list`.
+
+`uninstall` removes a toolchain's directory and nothing else. Its kept download
+and its line in `digests.tsv` stay, so installing the same version again needs
+no network and is held to the same digest. Removing the default warns and leaves
+nothing chosen until `sharpie default` picks another. `downloads/` is never
+pruned; delete what is in it to reclaim the space. Removing sharpie itself is
+deleting `~/.sharpie` (or `SHARPIE_HOME`) and its line in your shell's profile.
 
 ## Which toolchain runs
 
@@ -91,7 +122,40 @@ No other verb takes one, and each of them says so rather than ignoring it.
 
 A rung naming a toolchain that is not installed **stops there** rather than
 falling through to the next one: quietly running a different compiler than the
-one that was asked for, and saying nothing about it, is worse than refusing.
+one that was asked for, and saying nothing about it, is worse than refusing. So
+does a `wsharp-toolchain.toml` that names nothing usable -- one that is not
+TOML, or has no `toolchain` -- which says which file it was rather than running
+the machine's default instead of the project's choice.
+
+A pin file names its toolchain in either of two spellings:
+
+```toml
+toolchain = "0.2.3"
+```
+
+```toml
+[toolchain]
+channel = "stable"
+```
+
+A channel at any rung -- `wsharp +stable`, `SHARPIE_TOOLCHAIN=latest`, a pin
+like the second -- names the **newest toolchain installed** on it for this
+machine: `stable` the newest that is not a pre-release, `latest` the newest of
+all. It is answered from what is installed, never from the network; which
+releases exist is `sharpie update`'s question.
+
+A rung naming something that is not a toolchain name at all stops there too. A name is
+a version (`0.2.3`, `0.2.0-rc1`, bare or with its triple), a channel (`stable`,
+`latest`), or whatever was given to `sharpie toolchain link`: ASCII letters and
+digits with `.`, `-`, `+` and `_` among them, starting with a letter or a digit.
+It is **never a path** -- no `/` or `\`, no `..`, no drive letter, nothing
+hidden, nothing empty -- and never a name Windows treats specially: not a DOS
+device (`con`, `nul`, `com1` and the rest, whatever follows a `.`), and not
+ending in a `.`, which Windows strips. A `wsharp-toolchain.toml` is a file in whatever
+repository was just cloned, and a name that could climb out of
+`~/.sharpie/toolchains/` would let that file decide which program `wsharp`
+runs. Every verb that takes a toolchain -- `default`, `uninstall`, `override
+set`, `toolchain link` and `install` -- refuses one in the same words.
 
 ## What a toolchain is
 
@@ -104,8 +168,17 @@ a directory:
 ├── toolchains/<version>-<triple>/ wsharp, ingot, lib/libwsharp_start.a
 ├── downloads/                     tarballs, kept so a retry need not refetch
 ├── tmp/                           staging, renamed into place atomically
+├── digests.tsv                    what each release hashed to when first installed
 └── settings.toml
 ```
+
+A kept download that still hashes to the published digest *is* the published
+archive, so an install after an uninstall, a repair and a retry after a failed
+unpack all take it from `downloads/` rather than fetching it again.
+
+A toolchain directory without a runnable `wsharp` and `ingot` in it is damaged,
+not installed: `install` and `update` fetch it again and put the new one in its
+place, through `tmp/` like any other install, rather than answering `already`.
 
 `SHARPIE_HOME` moves all of it. It is deliberately **not** `WSHARP_HOME`, which
 is `ingot`'s content-addressed package store and a different thing -- the split
@@ -118,6 +191,15 @@ By default, the tags and the release assets on
 remote for its tags over git's smart HTTP transport, and fetches
 `wsharp-<version>-<triple>.tar.gz` and the `.sha256` beside it. What arrives is
 checked against the published digest before anything is unpacked.
+
+**A published release never changes, and sharpie holds it to that.** The
+digest proves an archive arrived intact, not that it is the archive that was
+there last week -- whoever can replace one can replace both. So the digest
+first seen for each archive is written to `digests.tsv`, and a later install of
+the same version that is offered a different one is refused before the archive is
+fetched. That is trust on first use: less than a signature, which is planned for
+1.1, and much more than nothing. If a release really was rebuilt on purpose,
+deleting its line is how to accept the new one.
 
 `SHARPIE_RELEASE_DIR` naming a directory is used **where it lies**, and then no
 socket is opened and the machine's certificate store is not read. The directory
@@ -175,38 +257,50 @@ WSHARP=/path/to/wsharp ./tests/run.sh
 Each case is a `.ws` program whose header holds one `// expect:` line per line
 it prints, which is the contract the compiler's own case suite uses. They reach
 into `src/` and ask each function what it answers. They run without a network:
-`tests/fixtures/` holds a real released tarball and a small one whose every
-member is known, and the archive reader is written against bytes rather than
+`tests/fixtures/` holds an archive shaped exactly like a release, with one
+large member, and a small one whose every member is known, and the archive reader is written against bytes rather than
 against a socket so that both halves can be checked here.
 
 ```sh
 wsharp build src/main.ws -o sharpie
-./tests/rungs.sh                      # or SHARPIE=./sharpie.exe ./tests/rungs.sh
+WSHARP=/path/to/wsharp ./tests/rungs.sh   # or SHARPIE=./sharpie.exe ...
 ```
+
+`WSHARP` defaults to `../WSharp/target/debug/wsharp`, as for `tests/run.sh`.
+The rungs need no network and no peer. The releases are a directory they build
+under `SHARPIE_RELEASE_DIR`, holding archives made from a stub compiled by the
+same `wsharp` -- so a rung can exec a proxy and have the program on the far side
+say which toolchain it came out of. They do need a C compiler, because
+`wsharp build` links that stub.
 
 `tests/rungs.sh` drives the **built binary**, one line per resolution rung: a
 fresh install, an upgrade, each of the five rungs above with the attribution
 `sharpie show` gives it, `update` following a channel while leaving a project's
 pin alone, a rollback (which is `sharpie default <previous>` -- there is no
 separate verb, because every toolchain an update installed is still there under
-its own name), an uninstall, a rung naming something that is not installed
-refusing rather than falling through, and three fault injections: a truncated
-download, a digest mismatch, and an extraction that stops part way. Each of the
-three has to leave the toolchain that was working still working.
+its own name -- and which survives the next `update`), an uninstall, a rung
+naming something that is not installed refusing rather than falling through, a
+rung or a verb naming a path refusing likewise, a toolchain whose programs are
+gone being installed again rather than trusted, a published release whose bytes
+change being refused, a retry taking the archive it already has, and three fault
+injections: a truncated download, a digest mismatch, and an extraction that
+stops part way. Each of the three has to leave the toolchain that was working
+still working. A last rung runs `install.sh` itself, offline, and cuts its copy short part way:
+the `bin/sharpie` that was there has to still be there, byte for byte.
+`tests/install-ps1.ps1` does the same to `install.ps1`, and CI runs it under
+Windows PowerShell 5.1 on Windows and PowerShell 7 everywhere else:
 
-It needs no network and no peer. The releases are a directory it builds for
-itself under `SHARPIE_RELEASE_DIR`, holding archives made from a stub compiled by
-the same `wsharp` -- so a rung can exec a proxy and have the program on the far
-side say which toolchain it came out of. It does need a C compiler, because it
-builds that stub.
+```sh
+pwsh tests/install-ps1.ps1 -Sharpie ./sharpie
+```
 
 CI runs both against a *released* `wsharp` rather than one built from a WSharp
 working tree, which keeps a standing check on the thing that would otherwise rot
 silently: sharpie has to keep compiling with the compiler its users actually
 have. All four release triples --
 `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, `x86_64-apple-darwin` and
-`aarch64-apple-darwin` -- run the whole of both, because a platform claimed by
-inference from another platform's run is not evidence.
+`aarch64-apple-darwin` -- run the whole of both, because each is a separate
+build and a pass on one says nothing about another.
 
 ## Licence
 

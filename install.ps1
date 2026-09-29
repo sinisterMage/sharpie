@@ -10,7 +10,8 @@
 #   irm https://raw.githubusercontent.com/sinisterMage/sharpie/main/install.ps1 | iex
 #
 # `SHARPIE_HOME` says where to install; `SHARPIE_VERSION` pins a version rather
-# than taking the newest. Environment variables and not parameters, because
+# than taking the newest; `SHARPIE_REPO` names the repository to take releases
+# from. Environment variables and not parameters, because
 # `iex` has no way to pass one -- and because `install.sh` reads the same three,
 # and two installers for one program should not be configured two ways.
 #
@@ -47,6 +48,43 @@
             return $true
         } catch {
             return $false
+        }
+    }
+
+    # Move `$staged` on to `$at`, whatever is there already.
+    #
+    # `ReplaceFile` when there is something to replace: one call, and the name
+    # holds the old binary until it holds the new one. It needs the destination
+    # to exist, so a first install is a plain `Move`, and neither can cross a
+    # volume, which is why the staged file sits beside its name.
+    #
+    # **A running image can be renamed but not replaced**, so if `sharpie.exe`
+    # is in use the replace is refused. Then the old file moves aside to
+    # `sharpie.exe.old` and the new one takes the name -- `init`'s answer to the
+    # same rule, and the same leftover, which the next `init` clears.
+    function Publish-Staged($staged, $at) {
+        if (-not (Test-Path -LiteralPath $at)) {
+            [System.IO.File]::Move($staged, $at)
+            return
+        }
+        try {
+            # `[NullString]::Value`, not `$null`: PowerShell hands a .NET
+            # `string` parameter an empty string for `$null`, and an empty
+            # backup name is refused where no backup is what was meant.
+            [System.IO.File]::Replace($staged, $at, [NullString]::Value)
+            return
+        } catch {
+            # Refused; the way round it is below.
+        }
+        $old = "$at.old"
+        Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue
+        [System.IO.File]::Move($at, $old)
+        try {
+            [System.IO.File]::Move($staged, $at)
+        } catch {
+            # Put the old one back: a failed upgrade leaves what was there.
+            [System.IO.File]::Move($old, $at)
+            throw
         }
     }
 
@@ -191,13 +229,29 @@
             tar -xzf $archive -C $work
             if ($LASTEXITCODE -ne 0) { Die "cannot unpack $stage.tar.gz" }
 
-            $bin = Join-Path $homeDir 'bin'
-            New-Item -ItemType Directory -Path $bin -Force | Out-Null
+            # `FullName`, because the .NET calls below resolve a relative path
+            # against the process's directory rather than PowerShell's, and
+            # `SHARPIE_HOME` may well be relative.
+            $bin = (New-Item -ItemType Directory -Path (Join-Path $homeDir 'bin') -Force).FullName
             # One binary. `sharpie init` makes the proxies out of it, because
             # deciding what to proxy is sharpie's business and not this
             # script's.
+            #
+            # **Staged beside its name and swapped in, never copied over it.**
+            # Running this again is how sharpie is upgraded, so `sharpie.exe`
+            # is usually a working binary already, and `Copy-Item -Force` on to
+            # it truncates it first -- a copy that stopped part way left half a
+            # binary under the one name every proxy is made from. `install.sh`
+            # and `init` both stage and rename, for the same reason.
             $installed = Join-Path $bin 'sharpie.exe'
-            Copy-Item -Path (Join-Path $work "$stage\sharpie.exe") -Destination $installed -Force
+            $staged = "$installed." + [System.Guid]::NewGuid().ToString('N')
+            try {
+                Copy-Item -LiteralPath (Join-Path $work "$stage\sharpie.exe") -Destination $staged
+                Publish-Staged $staged $installed
+            } catch {
+                Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+                Die "cannot put sharpie at ${installed}: $($_.Exception.Message)"
+            }
 
             & $installed init
             if ($LASTEXITCODE -ne 0) { Die '`sharpie init` failed' }

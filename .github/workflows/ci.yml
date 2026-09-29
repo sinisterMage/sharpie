@@ -50,11 +50,10 @@ jobs:
             # macOS has no `sha256sum`. `shasum -a 256` writes the same
             # `<hex>  <name>` line, which is all anything reading it needs.
             sha: shasum -a 256
-          # **The fourth release triple, and it is here because the criterion
-          # says a platform claimed by inference from another platform's run is
-          # not evidence.** Apple silicon and Intel are two builds of two
-          # different compilers running two different collectors; one of them
-          # passing says nothing about the other. `macos-13` was the Intel image
+          # **The fourth release triple, with a job of its own.** Apple silicon
+          # and Intel are two builds of two different compilers running two
+          # different collectors; one of them passing says nothing about the
+          # other. `macos-13` was the Intel image
           # and was retired in December 2025, so `macos-15-intel` is the label --
           # the same one `WSharp`'s own workflows use, which is where a release
           # for this triple actually comes from.
@@ -217,3 +216,24 @@ jobs:
           MSYS2_ARG_CONV_EXCL: "*"
           MSYS2_ENV_CONV_EXCL: "*"
         run: SHARPIE="./sharpie${{ matrix.exe }}" ./tests/rungs.sh
+
+      # **`install.ps1`, which `rungs.sh` cannot reach.** The rungs run
+      # `install.sh` and cut its copy short part way; this is the same for the
+      # PowerShell installer, offline in the same way, with the built binary as
+      # the release. Windows PowerShell 5.1 on Windows, because that is the
+      # oldest the script promises to run on and the one a bare machine has.
+      - name: install.ps1
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests/install-ps1.ps1 -Sharpie .\sharpie.exe
+          exit $LASTEXITCODE
+
+      # And PowerShell 7 everywhere else, which is where the test can be run
+      # without a Windows machine -- so a change to it is checked here first.
+      - name: install.ps1 under PowerShell 7
+        if: runner.os != 'Windows'
+        shell: pwsh
+        run: |
+          ./tests/install-ps1.ps1 -Sharpie ./sharpie
+          exit $LASTEXITCODE

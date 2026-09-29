@@ -134,17 +134,29 @@ stub="$mine/toolchain-stub$EXE"
 # `hold` is what goes in as `wsharp`: the stub for a version that is meant to be
 # installed and run, and a line of text for the ones that exist only to fail --
 # which keeps a fault-injection rung a few hundred bytes rather than a compiler.
+#
+# A stub is `ingot` as well, because every real release carries both and an
+# installation missing either is damaged -- which `install` now notices.
+#
+# `note`, when given, is written beside them as `NOTE`: two archives of one
+# version that must differ in their bytes -- a release rebuilt behind a
+# published digest -- differ by that and not by the second a timestamp fell in.
 archive() {
     version=$1
     hold=${2:-stub}
+    extra=${3:-}
     name="wsharp-$version-$triple"
     stage="$mine/stage/$name"
     rm -rf "$mine/stage"
     mkdir -p "$stage"
     if [ "$hold" = "stub" ]; then
         cp "$stub" "$stage/wsharp$EXE"
+        cp "$stub" "$stage/ingot$EXE"
     else
         printf 'not a compiler\n' > "$stage/wsharp$EXE"
+    fi
+    if [ -n "$extra" ]; then
+        printf '%s\n' "$extra" > "$stage/NOTE"
     fi
     ( cd "$mine/stage" && tar -czf "$releases/$name.tar.gz" "$name" )
     sha256 "$releases/$name.tar.gz" > "$releases/$name.tar.gz.sha256"
@@ -223,7 +235,7 @@ absent_dir() {
     return 0
 }
 
-# **The assertion the criterion is about.** `sharpie show` prints
+# **The assertion every rung depends on.** `sharpie show` prints
 # `toolchain<TAB><name><TAB><why>`, and `why` is the rung of the ladder that
 # answered. Asserting the name alone would pass for a ladder that always used the
 # default, which is exactly the bug a resolution test exists to find.
@@ -445,16 +457,58 @@ rung_the_default() {
     return 0
 }
 
+# A toolchain whose programs are gone is installed again, not trusted.
+#
+# A directory being there used to be the whole test, so with `wsharp` deleted
+# from it `install` said `already` and exited 0, and the next `wsharp` through a
+# proxy failed with nothing to suggest that installing again was the fix. Now
+# `install` fetches it again and puts it in place, through the same staging
+# directory as a first install -- and without moving the default, because it is
+# still installing a toolchain rather than choosing one.
+rung_repairs_the_damaged() {
+    rm -f "$mine/home/toolchains/$(full 0.9.0)/wsharp$EXE"
+    sharpie install 0.9.0
+    exited 0 || return 1
+    says "installed	$(full 0.9.0)" || return 1
+    denies "already" || return 1
+    denies "default	" || return 1
+
+    say "$bin/wsharp$EXE" +0.9.0 --version
+    exited 0 || return 1
+    says "toolchains/$(full 0.9.0)/wsharp" || return 1
+
+    # The default, missing its other program, in the same way.
+    rm -f "$mine/home/toolchains/$(full 0.9.1)/ingot$EXE"
+    sharpie install 0.9.1
+    exited 0 || return 1
+    says "installed	$(full 0.9.1)" || return 1
+    sharpie which ingot
+    exited 0 || return 1
+    says "toolchains/$(full 0.9.1)/ingot" || return 1
+    shown "$work" "$(full 0.9.1)" "the default" || return 1
+
+    # Whole again, so the next install is the no-op it always was.
+    sharpie install 0.9.0
+    exited 0 || return 1
+    says "already	$(full 0.9.0)" || return 1
+
+    # The damaged trees went aside into `tmp/` and are gone from there too.
+    left=$(ls "$mine/home/tmp" 2>/dev/null | wc -l | tr -d ' ')
+    [ "$left" = "0" ] || { note "$left directories left under tmp/"; return 1; }
+    return 0
+}
+
 # `update` follows a channel, and leaves a pin alone.
 #
 # Two halves, and the second is the one worth having: somebody who asked for
 # `0.9.0` asked for `0.9.0`, and a project that pinned one pinned it.
 rung_channel_update() {
     # Nothing was installed from a channel yet -- both installs above named a
-    # version -- so there is nothing standing to re-ask.
+    # version, and `sharpie default` pinned the second -- so there is nothing
+    # standing to re-ask.
     sharpie update
     exited 1 || return 1
-    says "nothing was installed from a channel" || return 1
+    says "the default follows no channel" || return 1
 
     # `stable` is the newest release that is not a prerelease, which is 0.9.1
     # and is already here. The channel is recorded anyway, which is the whole
@@ -480,12 +534,30 @@ rung_channel_update() {
     # standing request about the *default*; a pin is a statement about a tree.
     shown "$work/project/src/deep/deeper" "$(full 0.9.0)" "wsharp-toolchain.toml" || return 1
     shown "$work/elsewhere" "$(full 0.9.0)" "a directory override" || return 1
+
+    # **Following is where the default goes, not whether something was
+    # fetched.** The channel's newest may already be here, installed by its
+    # number -- which leaves the default alone, as any install does -- and
+    # `update` still moves the default on to it. It used to print `current`
+    # and leave the default on the release before.
+    archive 0.9.6
+    sharpie install 0.9.6
+    exited 0 || return 1
+    says "installed	$(full 0.9.6)" || return 1
+    denies "default	" || return 1
+    shown "$work" "$(full 0.9.2)" "the default" || return 1
+
+    sharpie update
+    exited 0 || return 1
+    says "current	stable	$(full 0.9.6)" || return 1
+    says "default	$(full 0.9.6)" || return 1
+    shown "$work" "$(full 0.9.6)" "the default" || return 1
     return 0
 }
 
 # Rollback: `sharpie default <previous>`, and no new verb for it.
 #
-# Johnny's ruling, and it is the right one: every toolchain an update installed
+# There is no `rollback` verb, on purpose: every toolchain an update installed
 # is still on disk under its own name, so going back is choosing one of them --
 # which the verb that chooses one already does.
 rung_rollback() {
@@ -503,6 +575,24 @@ rung_rollback() {
     sharpie toolchain list
     exited 0 || return 1
     says "installed	$(full 0.9.2)" || return 1
+    says "installed	$(full 0.9.6)" || return 1
+
+    # **And it survives the next `update`,** with the channel moving on in the
+    # meantime. A default chosen by name is pinned, so `update` has nothing to
+    # follow and says so; the release it would have moved to is not fetched.
+    # This used to install 0.9.7 and make it the default, undoing the rollback
+    # the first time anybody ran the verb that is supposed to be safe to run.
+    archive 0.9.7
+    sharpie update
+    exited 1 || return 1
+    says "the default follows no channel" || return 1
+    denies "default	" || return 1
+    shown "$work" "$(full 0.9.1)" "the default" || return 1
+    absent_dir "$mine/home/toolchains/$(full 0.9.7)" || return 1
+    say "$bin/wsharp$EXE" --version
+    exited 0 || return 1
+    says "toolchains/$(full 0.9.1)/wsharp" || return 1
+    forget 0.9.7
 
     # There is no `rollback`, and the message says what there is.
     sharpie rollback
@@ -611,6 +701,125 @@ rung_refuses_the_missing() {
     return 0
 }
 
+# A rung naming a *path* refuses too, and so does every verb that takes a
+# toolchain.
+#
+# The ladder is where the danger comes from: a `wsharp-toolchain.toml` in a
+# repository somebody has just cloned is a file a stranger wrote, and a name used
+# to be joined on to `toolchains/` as it came -- so `../../trap`, or an absolute
+# path, was a toolchain wherever it pointed, `show` called it an ordinary pin, and
+# the proxy ran whatever was there. The verbs are where it cost data: `uninstall`
+# renamed the path into `tmp/` and deleted it, and `uninstall ""` deleted
+# `toolchains/` itself.
+#
+# `trap` holds a working stub, so each refusal below had something runnable on
+# the far side of it; and the default is installed, so falling through would have
+# found something too.
+rung_refuses_a_path() {
+    mkdir -p "$mine/trap"
+    cp "$stub" "$mine/trap/wsharp$EXE"
+    # Relative to `$SHARPIE_HOME/toolchains`, which is what a name is joined on to.
+    up="../../trap"
+
+    for rung in argument environment pin absolute override default; do
+        named=$up
+        case $rung in
+            argument)
+                sharpie "+$up" show
+                why="the \`+\` argument" ;;
+            environment)
+                env_line="SHARPIE_TOOLCHAIN=$up"
+                sharpie show
+                why="SHARPIE_TOOLCHAIN" ;;
+            pin)
+                mkdir -p "$mine/cloned"
+                printf 'toolchain = "%s"\n' "$up" > "$mine/cloned/wsharp-toolchain.toml"
+                where="$work/cloned"
+                sharpie show
+                why="wsharp-toolchain.toml" ;;
+            absolute)
+                named="$work/trap"
+                printf 'toolchain = "%s"\n' "$named" > "$mine/cloned/wsharp-toolchain.toml"
+                where="$work/cloned"
+                sharpie show
+                why="wsharp-toolchain.toml" ;;
+            override)
+                mkdir -p "$mine/spot3"
+                # By hand, because `override set` refuses it -- which is below.
+                printf '\n[[override]]\npath = "%s"\ntoolchain = "%s"\n' "$work/spot3" "$up" \
+                    >> "$mine/home/settings.toml"
+                where="$work/spot3"
+                sharpie show
+                why="a directory override" ;;
+            default)
+                # Rewritten rather than appended, because a second `default`
+                # key is a TOML error and would test the parser instead.
+                cp "$mine/home/settings.toml" "$mine/settings.keep"
+                sed "s|^default = .*|default = \"$up\"|" "$mine/settings.keep" \
+                    > "$mine/home/settings.toml"
+                sharpie show
+                cp "$mine/settings.keep" "$mine/home/settings.toml"
+                why="the default" ;;
+        esac
+        exited 1 || return 1
+        says "\`$named\` is not a toolchain name ($why)" || return 1
+        # `directory` is printed only for something chosen.
+        denies "directory	" || return 1
+    done
+
+    # The attack itself: a proxied command run inside the cloned tree.
+    printf 'toolchain = "%s"\n' "$up" > "$mine/cloned/wsharp-toolchain.toml"
+    where="$work/cloned"
+    say "$bin/wsharp$EXE" build x.ws
+    if [ "$status" -eq 0 ]; then
+        note "the proxy ran something"
+        return 1
+    fi
+    says "is not a toolchain name (wsharp-toolchain.toml)" || return 1
+    denies "trap/wsharp" || return 1
+
+    # Every verb that takes a toolchain refuses one that is a path, and says so
+    # in the same words.
+    sharpie default "$up"
+    exited 2 || return 1
+    says "\`$up\` is not a toolchain name" || return 1
+    sharpie default "$work/trap"
+    exited 2 || return 1
+    says "is not a toolchain name" || return 1
+    shown "$work" "$(full 0.9.0)" "the default" || return 1
+
+    where="$work/spot3"
+    sharpie override set "$up"
+    exited 2 || return 1
+    says "is not a toolchain name" || return 1
+
+    sharpie toolchain link "$up" "$work/trap"
+    exited 2 || return 1
+    says "is not a toolchain name" || return 1
+
+    sharpie install "$up"
+    exited 2 || return 1
+    says "is not a toolchain name" || return 1
+
+    # And the one that deletes: nothing it was pointed at is gone afterwards.
+    sharpie uninstall "$up"
+    exited 2 || return 1
+    says "is not a toolchain name" || return 1
+    sharpie uninstall "$work/trap"
+    exited 2 || return 1
+    says "is not a toolchain name" || return 1
+    [ -x "$mine/trap/wsharp$EXE" ] || { note "uninstall deleted $mine/trap"; return 1; }
+    sharpie uninstall ""
+    exited 2 || return 1
+    says "is not a toolchain name" || return 1
+    [ -d "$mine/home/toolchains/$(full 0.9.0)" ] || { note "uninstall \"\" deleted toolchains/"; return 1; }
+
+    sharpie override unset "$work/spot3"
+    exited 0 || return 1
+    rm -rf "$mine/trap" "$mine/cloned" "$mine/settings.keep"
+    return 0
+}
+
 # Fault injection one: a download that arrives short.
 #
 # On the wire this is a connection that closed early. Here the archive in the
@@ -674,6 +883,104 @@ rung_digest_mismatch() {
     return 0
 }
 
+# A published release that changes is refused, not installed.
+#
+# The digest beside an archive only proves the archive arrived whole: whoever
+# can replace one can replace both. W#'s release workflow could once be re-run
+# for a tag that was already public, and a toolchain removed and installed again
+# would then have been a different build under the same version. So the digest
+# first seen is kept in the home's ledger, and this rung publishes 0.9.8, installs
+# it, removes it, publishes *different* bytes as 0.9.8 with a digest that matches
+# them -- a perfectly consistent release, just not the same one -- and asks again.
+rung_changed_release() {
+    archive 0.9.8 stub "the first build"
+    sharpie install 0.9.8
+    exited 0 || return 1
+    sharpie uninstall 0.9.8
+    exited 0 || return 1
+
+    archive 0.9.8 stub "a rebuild behind the same tag"
+    sharpie install 0.9.8
+    exited 2 || return 1
+    says "has changed since this home first installed it" || return 1
+    absent_dir "$mine/home/toolchains/$(full 0.9.8)" || return 1
+
+    forget 0.9.8
+    return 0
+}
+
+# A retry takes the archive it already has.
+#
+# `downloads/` keeps every archive this home fetched, and one that still hashes
+# to the published digest is the published archive -- so an install after an
+# uninstall, a repair and a retry after a failed unpack need not fetch it again.
+# Proved by breaking the published copy after the first install: the sidecar
+# still names the original, so only the kept one can satisfy it.
+rung_kept_download() {
+    archive 0.9.9
+    sharpie install 0.9.9
+    exited 0 || return 1
+    sharpie uninstall 0.9.9
+    exited 0 || return 1
+
+    printf 'not the archive any more\n' > "$releases/wsharp-0.9.9-$triple.tar.gz"
+    sharpie install 0.9.9
+    exited 0 || return 1
+    says "installed" || return 1
+    if [ ! -x "$mine/home/toolchains/$(full 0.9.9)/wsharp$EXE" ]; then
+        note "0.9.9 was not installed from the kept download"
+        return 1
+    fi
+
+    # And a kept download that is not the published one is not used: it is
+    # fetched again, and here what is published is broken, so that fails
+    # rather than installing the stale copy.
+    sharpie uninstall 0.9.9
+    exited 0 || return 1
+    printf 'half of an archive' > "$mine/home/downloads/wsharp-0.9.9-$triple.tar.gz"
+    sharpie install 0.9.9
+    exited 2 || return 1
+    says "what was downloaded is not what was published" || return 1
+
+    forget 0.9.9
+    return 0
+}
+
+# A channel at a rung names the newest toolchain installed on it.
+#
+# `+stable` and a pin's `channel = "stable"` used to be refused as "`stable` is
+# not installed": nothing but `install` and `update` resolved a channel. A rung
+# now answers from what is installed -- `stable` the newest release, `latest`
+# the newest of all -- and says so. `uninstall` alone refuses one, because a
+# delete is never aimed by a guess.
+rung_channel_rungs() {
+    archive 0.9.12
+    archive 0.9.13-rc1
+    sharpie install 0.9.12
+    exited 0 || return 1
+    sharpie install 0.9.13-rc1
+    exited 0 || return 1
+
+    where="$work"
+    sharpie +stable show
+    attributed "$(full 0.9.12)" "the newest installed stable" || return 1
+    where="$work"
+    sharpie +latest show
+    attributed "$(full 0.9.13-rc1)" "the newest installed latest" || return 1
+
+    sharpie uninstall stable
+    exited 2 || return 1
+    says "is a channel" || return 1
+
+    sharpie uninstall 0.9.13-rc1
+    exited 0 || return 1
+    sharpie uninstall 0.9.12
+    exited 0 || return 1
+    forget 0.9.12
+    forget 0.9.13-rc1
+    return 0
+}
+
 # Fault injection three: an install that stops part way through the extraction.
 #
 # **Injected as an archive that cannot be written out, not as a signal.** A
@@ -731,6 +1038,129 @@ rung_interrupted_extract() {
     return 0
 }
 
+# Upgrading sharpie itself, which is `install.sh` run again -- and one that stops
+# part way leaving the sharpie that was there.
+#
+# `install.sh` used to `cp` the new binary on to `bin/sharpie`, and `cp` truncates
+# what it writes over: an upgrade interrupted mid-copy (a full disk, a Ctrl-C, a
+# closed laptop) left half a binary under the one name every proxy is made from.
+# It stages beside that name and renames now, as `init` does for the proxies.
+#
+# **Offline, and with the interruption injected rather than hoped for**, for
+# `rung_interrupted_extract`'s reason. The release is a directory; a `curl` in
+# front of the real one on `PATH` answers from it by the last component of the
+# URL, which is the whole of what `install.sh` asks of `curl` when
+# `SHARPIE_VERSION` is set. The interruption is a `cp` in front of the real one
+# that writes the first half of the file and fails, which is the state a real
+# interruption leaves, every time.
+#
+# Its own home, so nothing here touches the one the rungs above built -- and
+# `$mine` for everything the shell is handed, because `PATH` is colon-separated
+# and `D:/a/...` has a colon in it.
+rung_self_upgrade() {
+    version=9.8.7
+    name="sharpie-$version-$triple"
+    shelf="$mine/selfrel"
+    fetching="$mine/shims-fetch"
+    cut_short="$mine/shims-cut"
+    rm -rf "$shelf" "$fetching" "$cut_short" "$mine/stage" "$mine/selfhome"
+    mkdir -p "$shelf" "$fetching" "$cut_short" "$mine/stage/$name"
+
+    # A release of the sharpie under test, laid out as the release workflow
+    # lays one out.
+    cp "$SHARPIE" "$mine/stage/$name/sharpie$EXE"
+    ( cd "$mine/stage" && tar -czf "$shelf/$name.tar.gz" "$name" )
+    sha256 "$shelf/$name.tar.gz" > "$shelf/$name.tar.gz.sha256"
+    rm -rf "$mine/stage"
+
+    cat > "$fetching/curl" <<'SHIM'
+#!/bin/sh
+# `curl -o <file> <url>`, answered from $SHIM_SHELF. See `rung_self_upgrade`.
+out=""
+url=""
+while [ $# -gt 0 ]; do
+    case $1 in
+        -o) out=$2; shift 2 ;;
+        --proto | -w) shift 2 ;;
+        -*) shift ;;
+        *) url=$1; shift ;;
+    esac
+done
+file="$SHIM_SHELF/${url##*/}"
+[ -f "$file" ] || exit 22
+cat "$file" > "$out"
+SHIM
+    cp "$fetching/curl" "$cut_short/curl"
+    cat > "$cut_short/cp" <<'SHIM'
+#!/bin/sh
+# `cp <from> <to>`, interrupted half way: the first half of the file, then a
+# failure. See `rung_self_upgrade`.
+size=$(wc -c < "$1" | tr -d ' ')
+dd if="$1" of="$2" bs=1024 count=$((size / 2048)) 2>/dev/null
+exit 1
+SHIM
+    chmod +x "$fetching/curl" "$cut_short/curl" "$cut_short/cp"
+
+    selfbin="$mine/selfhome/bin"
+
+    # A first install, which is the ordinary path and has to keep working.
+    installer "$fetching"
+    exited 0 || return 1
+    says "sharpie $version for $triple" || return 1
+    whole || return 1
+    [ -x "$selfbin/wsharp$EXE" ] || { note "install.sh made no wsharp proxy"; return 1; }
+
+    # The upgrade that is cut short. It fails -- and the sharpie that was there
+    # is still there, whole, with nothing half-written left beside it.
+    installer "$cut_short"
+    if [ "$status" -eq 0 ]; then
+        note "install.sh succeeded with its copy cut short"
+        return 1
+    fi
+    whole || return 1
+    # Three, not counting the `.old` that Windows' first `init` leaves beside a
+    # proxy it could not replace while running it.
+    left=$(ls "$selfbin" | grep -v '\.old$' | wc -l | tr -d ' ')
+    [ "$left" = "3" ] || { note "bin/ holds $left files: $(ls "$selfbin" | tr '\n' ' ')"; return 1; }
+
+    # And the upgrade that is not, over the binary that is there: the rename
+    # has to replace it.
+    installer "$fetching"
+    exited 0 || return 1
+    whole || return 1
+
+    rm -rf "$shelf" "$fetching" "$cut_short" "$mine/selfhome"
+    return 0
+}
+
+# Whether the installed sharpie is the whole binary, and runs.
+#
+# **By its bytes, because running it proves nothing.** Half of this binary
+# still answers `version` and `help` -- the pages those touch are all in the
+# first half -- so the unfixed script's truncated upgrade passed a check that
+# only ran it, and would have died later on whichever verb reached further.
+# The release on the shelf is `$SHARPIE`'s bytes, so that is what `bin/` must
+# hold.
+whole() {
+    if ! cmp -s "$selfbin/sharpie$EXE" "$SHARPIE"; then
+        note "bin/sharpie$EXE is not the binary that was installed: $(wc -c < "$selfbin/sharpie$EXE" | tr -d ' ') of $(wc -c < "$SHARPIE" | tr -d ' ') bytes"
+        return 1
+    fi
+    say "$selfbin/sharpie$EXE" version
+    exited 0 || return 1
+    says "sharpie " || return 1
+    return 0
+}
+
+# `install.sh`, with the shims in `$1` in front of `PATH`. Not through `say`,
+# because `PATH` can hold a space (`/c/Program Files/...`) and `env_line` is
+# split on them.
+installer() {
+    out=$(cd "$mine" && PATH="$1:$PATH" SHIM_SHELF="$shelf" \
+        SHARPIE_HOME="$work/selfhome" SHARPIE_VERSION="$version" \
+        sh "$root/install.sh" 2>&1) && status=0 || status=$?
+}
+
 # What every fault injection has to leave behind: nothing new, and everything
 # that was working still working.
 survived() {
@@ -763,13 +1193,19 @@ sharpie_toolchain:SHARPIE_TOOLCHAIN
 pin_file:a wsharp-toolchain.toml found by walking upwards
 directory_override:a directory override
 the_default:the default
+repairs_the_damaged:a damaged toolchain is installed again, not trusted
 channel_update:update follows a channel and leaves a pin alone
 rollback:rollback is \`sharpie default <previous>\`
 uninstall:uninstall
 refuses_the_missing:a rung naming what is not installed refuses
+refuses_a_path:a rung or a verb naming a path refuses
 truncated_download:a truncated download
 digest_mismatch:a digest mismatch
-interrupted_extract:an install interrupted mid-extract"
+changed_release:a published release that changes is refused
+kept_download:a retry takes the archive it already has
+channel_rungs:a channel at a rung names the newest installed on it
+interrupted_extract:an install interrupted mid-extract
+self_upgrade:an upgrade of sharpie itself, cut short, leaves the one that was there"
 
 pass=0
 fail=0
