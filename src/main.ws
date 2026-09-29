@@ -202,6 +202,12 @@ fn set_default(f: fault.Fault, args: []str) i64 {
         return FAILED;
     };
     settings.set_default(s, found.name);
+    // **A default chosen by name is pinned**, and `update` leaves it where it
+    // is. This is the whole of rollback -- `sharpie default <previous>` -- and
+    // without it the next `update` moved the default straight back on to the
+    // release somebody had just rolled back from. `install stable` is how the
+    // default starts following a channel again.
+    settings.unset_channel(s);
     settings.save(h, s) catch {
         fault.fail(f, text.concat("cannot write ", home.settings(h)));
         return FAILED;
@@ -479,7 +485,7 @@ fn install_verb(f: fault.Fault, args: []str) i64 {
     if (fs.is_dir(home.toolchain(h, name))) {
         print(text.concat("already\t", name));
         if (release.is_channel(args[0])) { settings.set_channel(s, args[0]); }
-        return adopt(f, h, s, name);
+        return adopt(f, h, s, name, release.is_channel(args[0]));
     }
 
     // The archive is written down before it is unpacked, so a failure part way
@@ -490,22 +496,26 @@ fn install_verb(f: fault.Fault, args: []str) i64 {
 
     print(text.concat("installed\t", name));
     if (release.is_channel(args[0])) { settings.set_channel(s, args[0]); }
-    return adopt(f, h, s, name);
+    return adopt(f, h, s, name, release.is_channel(args[0]));
 }
 
 /// Make a freshly installed toolchain the default when there is not one yet.
 ///
 /// Only when there is not one: installing a second toolchain should not quietly
-/// move somebody off the one they were using.
-fn adopt(f: fault.Fault, h: str, s: settings.Settings, name: str) i64 {
+/// move somebody off the one they were using. `following` says whether it was
+/// asked for by channel; adopted from a version, the default is pinned from the
+/// start, as if chosen with `sharpie default`.
+fn adopt(f: fault.Fault, h: str, s: settings.Settings, name: str, following: bool) i64 {
     // Saved either way, and that matters: the caller may have just recorded a
     // channel, and returning early because a default already exists would
-    // throw that away -- so `update` would then say nothing was installed from
-    // a channel, having just installed one.
+    // throw that away -- so `update` would then find no channel to follow,
+    // having just been asked for one. From here the default follows it, and
+    // it is `update` that moves the default along, saying so when it does.
     var chose = false;
     if (settings.default_toolchain(s)) |already| {
     } else {
         settings.set_default(s, name);
+        if (!following) { settings.unset_channel(s); }
         chose = true;
     }
     settings.save(h, s) catch {
@@ -528,18 +538,18 @@ fn keep(f: fault.Fault, h: str, name: str, archive: str) bool {
     return true;
 }
 
-/// Re-ask the channel the default came from, and install what it says now.
+/// Re-ask the channel the default follows, and put the default where it says.
 ///
 /// Only a channel is re-asked. Somebody who installed `0.1.8` asked for
 /// `0.1.8`, and moving them off it because something newer exists would be
 /// answering a question they did not put -- which is why `install` records
-/// whether the request was standing.
+/// whether the request was standing, and why `sharpie default` ends it.
 fn update_verb(f: fault.Fault) i64 {
     const h = opened(f) orelse return FAILED;
     const s = read_settings(f, h) orelse return FAILED;
 
     const chan = settings.channel(s) orelse {
-        fault.fail(f, "nothing was installed from a channel; `sharpie install stable` starts one");
+        fault.fail(f, "the default follows no channel; `sharpie install stable` starts following one");
         return NOTHING;
     };
     const cfg = anchors(f) orelse return FAILED;
@@ -554,17 +564,22 @@ fn update_verb(f: fault.Fault) i64 {
     const name = home.spell(semver.render(want), triple);
     if (fs.is_dir(home.toolchain(h, name))) {
         print(text.concat(text.concat("current\t", chan), text.concat("\t", name)));
-        return OK;
+    } else {
+        const archive = release.download(f, want, triple, cfg) orelse return FAILED;
+        if (!keep(f, h, release.archive_name(want, triple), archive)) { return FAILED; }
+        if (!install.unpack(f, h, name, archive)) { return FAILED; }
+        print(text.concat("installed\t", name));
     }
 
-    const archive = release.download(f, want, triple, cfg) orelse return FAILED;
-    if (!keep(f, h, release.archive_name(want, triple), archive)) { return FAILED; }
-    if (!install.unpack(f, h, name, archive)) { return FAILED; }
-    print(text.concat("installed\t", name));
-
-    // The channel moved, so what it points at moves with it. This is the one
+    // The default follows the channel, so it goes wherever the channel is --
+    // whether that release arrived just now or was already here. It used to
+    // move only when something had to be fetched, so a release installed
+    // earlier by its number (`sharpie install 1.2.0`) left `update` saying
+    // `current` with the default still on the one before. This is the one
     // place a default is changed without being asked for by name, and it is
     // what "install stable" meant in the first place.
+    const was = settings.default_toolchain(s) orelse "";
+    if (text.eq(was, name)) { return OK; }
     settings.set_default(s, name);
     if (!saved(f, h, s)) { return FAILED; }
     print(text.concat("default\t", name));

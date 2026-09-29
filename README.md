@@ -59,6 +59,14 @@ sharpie update              # re-ask the channel and follow it
 version is a one-off and is left alone. That distinction is recorded at install
 time, so somebody who asked for `0.1.0` is never quietly moved off it.
 
+`sharpie default <toolchain>` is a request by name too, so it **pins** the
+default: `update` then has no channel to follow and says so, rather than moving
+the default anywhere. That is what makes `sharpie default <previous>` a rollback
+the next `update` does not undo. `sharpie install stable` makes the default
+follow a channel again, and the next `update` moves it along. While it follows
+one, `update` puts the default on whatever the channel names now -- whether it
+had to fetch that release or found it already installed by its number.
+
 Output is tab-separated, one record a line, as `ingot`'s is -- so it composes
 with `cut` instead of needing a `--json` that would have to be kept in step
 with it.
@@ -200,11 +208,11 @@ fresh install, an upgrade, each of the five rungs above with the attribution
 `sharpie show` gives it, `update` following a channel while leaving a project's
 pin alone, a rollback (which is `sharpie default <previous>` -- there is no
 separate verb, because every toolchain an update installed is still there under
-its own name), an uninstall, a rung naming something that is not installed
-refusing rather than falling through, a rung or a verb naming a path refusing
-likewise, and three fault injections: a truncated download, a digest mismatch,
-and an extraction that stops part way. Each of the three has to leave the
-toolchain that was working still working.
+its own name -- and which survives the next `update`), an uninstall, a rung
+naming something that is not installed refusing rather than falling through, a
+rung or a verb naming a path refusing likewise, and three fault injections: a
+truncated download, a digest mismatch, and an extraction that stops part way.
+Each of the three has to leave the toolchain that was working still working.
 
 It needs no network and no peer. The releases are a directory it builds for
 itself under `SHARPIE_RELEASE_DIR`, holding archives made from a stub compiled by

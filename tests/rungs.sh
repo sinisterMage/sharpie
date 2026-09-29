@@ -451,10 +451,11 @@ rung_the_default() {
 # `0.9.0` asked for `0.9.0`, and a project that pinned one pinned it.
 rung_channel_update() {
     # Nothing was installed from a channel yet -- both installs above named a
-    # version -- so there is nothing standing to re-ask.
+    # version, and `sharpie default` pinned the second -- so there is nothing
+    # standing to re-ask.
     sharpie update
     exited 1 || return 1
-    says "nothing was installed from a channel" || return 1
+    says "the default follows no channel" || return 1
 
     # `stable` is the newest release that is not a prerelease, which is 0.9.1
     # and is already here. The channel is recorded anyway, which is the whole
@@ -480,6 +481,24 @@ rung_channel_update() {
     # standing request about the *default*; a pin is a statement about a tree.
     shown "$work/project/src/deep/deeper" "$(full 0.9.0)" "wsharp-toolchain.toml" || return 1
     shown "$work/elsewhere" "$(full 0.9.0)" "a directory override" || return 1
+
+    # **Following is where the default goes, not whether something was
+    # fetched.** The channel's newest may already be here, installed by its
+    # number -- which leaves the default alone, as any install does -- and
+    # `update` still moves the default on to it. It used to print `current`
+    # and leave the default on the release before.
+    archive 0.9.6
+    sharpie install 0.9.6
+    exited 0 || return 1
+    says "installed	$(full 0.9.6)" || return 1
+    denies "default	" || return 1
+    shown "$work" "$(full 0.9.2)" "the default" || return 1
+
+    sharpie update
+    exited 0 || return 1
+    says "current	stable	$(full 0.9.6)" || return 1
+    says "default	$(full 0.9.6)" || return 1
+    shown "$work" "$(full 0.9.6)" "the default" || return 1
     return 0
 }
 
@@ -503,6 +522,24 @@ rung_rollback() {
     sharpie toolchain list
     exited 0 || return 1
     says "installed	$(full 0.9.2)" || return 1
+    says "installed	$(full 0.9.6)" || return 1
+
+    # **And it survives the next `update`,** with the channel moving on in the
+    # meantime. A default chosen by name is pinned, so `update` has nothing to
+    # follow and says so; the release it would have moved to is not fetched.
+    # This used to install 0.9.7 and make it the default, undoing the rollback
+    # the first time anybody ran the verb that is supposed to be safe to run.
+    archive 0.9.7
+    sharpie update
+    exited 1 || return 1
+    says "the default follows no channel" || return 1
+    denies "default	" || return 1
+    shown "$work" "$(full 0.9.1)" "the default" || return 1
+    absent_dir "$mine/home/toolchains/$(full 0.9.7)" || return 1
+    say "$bin/wsharp$EXE" --version
+    exited 0 || return 1
+    says "toolchains/$(full 0.9.1)/wsharp" || return 1
+    forget 0.9.7
 
     # There is no `rollback`, and the message says what there is.
     sharpie rollback

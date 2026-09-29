@@ -15,6 +15,10 @@
 // expect: nothing is set to start with: true
 // expect: default after setting: 0.1.1-x86_64-unknown-linux-gnu
 // expect: default survives a round trip: 0.1.1-x86_64-unknown-linux-gnu
+// expect: no channel is followed to start with: true
+// expect: a followed channel survives a round trip: stable
+// expect: a pinned default follows no channel, after a round trip too: true
+// expect: unpinning nothing writes nothing: true
 // expect: exact directory: 0.2.0-aarch64-apple-darwin
 // expect: a directory below it inherits: 0.2.0-aarch64-apple-darwin
 // expect: the longest override wins: 0.3.0-aarch64-apple-darwin
@@ -77,6 +81,22 @@ fn run() !void {
     // Everything from here reads what was written, not what is in memory.
     s = try settings.read(h);
     show("default survives a round trip", settings.default_toolchain(s) orelse "none");
+
+    // Following a channel, and then not: `sharpie default` pins the default,
+    // which is what keeps a rollback from being undone by the next `update`.
+    print(text.concat("no channel is followed to start with: ", yes(absent(settings.channel(s)))));
+    settings.set_channel(s, "stable");
+    try settings.save(h, s);
+    s = try settings.read(h);
+    show("a followed channel survives a round trip", settings.channel(s) orelse "none");
+    settings.unset_channel(s);
+    try settings.save(h, s);
+    s = try settings.read(h);
+    print(text.concat("a pinned default follows no channel, after a round trip too: ",
+        yes(absent(settings.channel(s)))));
+    const fresh = try settings.read(path.join(h, "never-written"));
+    settings.unset_channel(fresh);
+    print(text.concat("unpinning nothing writes nothing: ", yes(!toml.has(fresh.root, "channel"))));
 
     show("exact directory", settings.override_for(s, "/work/project") orelse "none");
     show("a directory below it inherits",
