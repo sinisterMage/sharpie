@@ -106,7 +106,10 @@ fn run() !void {
     print(text.concat("a pin naming a path chooses nothing: ", yes(unchosen(h, s, []str{}, repo))));
     print(text.concat("the pin says: ", toolchain.why_nothing(s, []str{}, repo)));
 
-    try io.write_file(pin, text.concat(text.concat("toolchain = \"", escaped), "\"\n"));
+    // Spelled with `/`: on Windows the temporary directory arrives as
+    // `C:\Users\...`, and a `\U` in a TOML string is an escape, so the raw
+    // spelling would make this a malformed pin rather than an absolute one.
+    try io.write_file(pin, text.concat(text.concat("toolchain = \"", path.normalise(escaped)), "\"\n"));
     print(text.concat("an absolute pin chooses nothing: ", yes(unchosen(h, s, []str{}, repo))));
     print(text.concat("and says it is not a name: ",
         yes(text.find(toolchain.why_nothing(s, []str{}, repo), "is not a toolchain name") >= 0)));
@@ -122,7 +125,7 @@ fn run() !void {
     print(text.concat("a malformed pin chooses nothing: ", yes(unchosen(h, s, []str{}, repo))));
     const said = toolchain.why_nothing(s, []str{}, repo);
     print(text.concat("and names its file: ",
-        yes(text.find(said, "names no toolchain") >= 0 and text.find(said, pin) >= 0)));
+        yes(text.find(said, "names no toolchain") >= 0 and text.find(said, path.normalise(pin)) >= 0)));
     try io.write_file(pin, "channel = \"stable\"\n");
     print(text.concat("a pin without `toolchain` chooses nothing: ", yes(unchosen(h, s, []str{}, repo))));
 
