@@ -3,9 +3,10 @@
 // Two fixtures. `sample.tar.gz` is small and fully controlled, so the exact
 // names, sizes, kinds and modes can be asserted -- including the one that this
 // whole file exists for, that `runme` came out 0755 and `notes.txt` 0644.
-// The other is a **real released toolchain**, 6 MB of it, which is the case
-// that says the reader survives a multi-block member and a deflate stream long
-// enough to use more than one Huffman block.
+// The other is shaped exactly like a released toolchain, with a 300 000-byte
+// member of incompressible filler, which is the case that says the reader
+// survives a multi-block member and a deflate stream long enough to use more
+// than one Huffman block.
 //
 // No network and no filesystem writing: bytes in, entries out. That is the
 // split `ingot/git.ws` made between its protocol and its transport, and it is

@@ -3,15 +3,17 @@
 #
 # This is the one piece that cannot be written in W#, and the reason is the
 # whole bootstrap: it runs *before* there is a W# toolchain to run anything
-# else with. So it is POSIX shell, it assumes only `uname`, `tar` and one of
-# `curl`/`wget`, and it does exactly as much as it must -- work out which
+# else with. So it is POSIX shell, it assumes only `uname`, `tar`, `curl` (or
+# `wget` when `SHARPIE_VERSION` says which release) and `sha256sum` or `shasum`,
+# and it does exactly as much as it must -- work out which
 # build belongs to this machine, fetch it, check it, and hand over to sharpie
 # for everything after that.
 #
 #   curl -fsSL https://raw.githubusercontent.com/sinisterMage/sharpie/main/install.sh | sh
 #
 # `SHARPIE_HOME` says where to install; `SHARPIE_VERSION` pins a version rather
-# than taking the newest.
+# than taking the newest; `SHARPIE_REPO` names the repository to take sharpie's
+# releases from (a fork's, say).
 #
 # This runs on Windows too, under Git Bash or MSYS, and `install.ps1` is the
 # same thing for a PowerShell that has neither.

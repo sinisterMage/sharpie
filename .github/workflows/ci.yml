@@ -50,11 +50,10 @@ jobs:
             # macOS has no `sha256sum`. `shasum -a 256` writes the same
             # `<hex>  <name>` line, which is all anything reading it needs.
             sha: shasum -a 256
-          # **The fourth release triple, and it is here because the criterion
-          # says a platform claimed by inference from another platform's run is
-          # not evidence.** Apple silicon and Intel are two builds of two
-          # different compilers running two different collectors; one of them
-          # passing says nothing about the other. `macos-13` was the Intel image
+          # **The fourth release triple, with a job of its own.** Apple silicon
+          # and Intel are two builds of two different compilers running two
+          # different collectors; one of them passing says nothing about the
+          # other. `macos-13` was the Intel image
           # and was retired in December 2025, so `macos-15-intel` is the label --
           # the same one `WSharp`'s own workflows use, which is where a release
           # for this triple actually comes from.

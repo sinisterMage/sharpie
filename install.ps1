@@ -10,7 +10,8 @@
 #   irm https://raw.githubusercontent.com/sinisterMage/sharpie/main/install.ps1 | iex
 #
 # `SHARPIE_HOME` says where to install; `SHARPIE_VERSION` pins a version rather
-# than taking the newest. Environment variables and not parameters, because
+# than taking the newest; `SHARPIE_REPO` names the repository to take releases
+# from. Environment variables and not parameters, because
 # `iex` has no way to pass one -- and because `install.sh` reads the same three,
 # and two installers for one program should not be configured two ways.
 #
